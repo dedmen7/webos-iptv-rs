@@ -122,6 +122,7 @@ struct Playback {
     sync_enabled: bool,
     sync: Option<timing::AudioSync>,
     sync_notice: String,
+    awaiting_cross_origin: bool,
 }
 
 struct App {

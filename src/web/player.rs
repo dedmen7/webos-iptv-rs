@@ -14,9 +14,10 @@ pub fn wire(app: &Shared) -> Result<(), JsValue> {
     let video = app.borrow().video();
     let shared = app.clone();
     on(&video, "loadedmetadata", move |_| {
-        let state = shared.borrow();
-        if let Some(play) = &state.playback {
-            let video = state.video();
+        let mut state = shared.borrow_mut();
+        let video = state.video();
+        if let Some(play) = &mut state.playback {
+            play.awaiting_cross_origin = false;
             if play.resume_at > 0.
                 && video.duration().is_finite()
                 && play.resume_at < video.duration() - 10.
@@ -37,8 +38,19 @@ pub fn wire(app: &Shared) -> Result<(), JsValue> {
     })?;
     let shared = app.clone();
     on(&video, "error", move |_| {
-        let state = shared.borrow();
-        if state.playback.is_some() {
+        let mut state = shared.borrow_mut();
+        let video = state.video();
+        let Some(play) = &mut state.playback else {
+            return;
+        };
+        if play.awaiting_cross_origin {
+            play.awaiting_cross_origin = false;
+            let url = video.src();
+            video.set_cross_origin(None);
+            video.set_src(&url);
+            drop(state);
+            request_play(&shared);
+        } else {
             state.player_note("Deze stream kon niet worden afgespeeld.");
         }
     })?;
@@ -139,6 +151,7 @@ pub fn start(app: &Shared, item: Item, with_subtitles: bool) {
             sync_enabled: true,
             sync: None,
             sync_notice: String::new(),
+            awaiting_cross_origin: show_tracks,
         });
         state
             .element("app")
@@ -160,6 +173,7 @@ pub fn start(app: &Shared, item: Item, with_subtitles: bool) {
             .element("player")
             .set_attribute("data-controls", "true");
         let video = state.video();
+        video.set_cross_origin(show_tracks.then_some("anonymous"));
         video.set_src(url.as_str());
     }
     request_play(app);
@@ -316,6 +330,7 @@ fn request_play(app: &Shared) {
         };
         (state.video(), play.version)
     };
+    let cross_origin = video.cross_origin();
     let Ok(promise) = video.play() else {
         return;
     };
@@ -335,6 +350,7 @@ fn request_play(app: &Shared) {
             .playback
             .as_ref()
             .is_some_and(|play| play.version == version)
+            && state.video().cross_origin() == cross_origin
         {
             state
                 .player_note("Afspelen kon niet starten. Controleer de stream en probeer opnieuw.");
@@ -784,6 +800,13 @@ fn configure_sync(state: &mut App) {
 
 fn sample_sync(app: &Shared) {
     let mut state = app.borrow_mut();
+    if state
+        .playback
+        .as_ref()
+        .is_none_or(|play| play.sync.is_none())
+    {
+        return;
+    }
     let video = state.video();
     if video.paused() || video.seeking() {
         return;
