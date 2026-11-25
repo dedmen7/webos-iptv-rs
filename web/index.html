@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Orbis IPTV</title>
+  <link rel="stylesheet" href="style.css">
+  <script defer src="player.js"></script>
+</head>
+<body>
+  <p id="initial" role="status">Orbis IPTV starten…</p>
+  <div id="app">
+    <header class="topbar">
+      <div class="brand"><span aria-hidden="true" class="brand-dot"></span>Orbis IPTV</div>
+      <nav id="navigation" aria-label="Hoofdnavigatie">
+        <button data-cmd="view" data-value="live">Live</button>
+        <button data-cmd="view" data-value="guide">Gids</button>
+        <button data-cmd="view" data-value="movies">Films</button>
+        <button data-cmd="view" data-value="series">Series</button>
+        <button data-cmd="view" data-value="library">Mijn lijst</button>
+        <button data-cmd="view" data-value="settings">Instellingen</button>
+      </nav>
+      <div class="header-actions">
+        <input id="search" type="search" placeholder="Zoeken" aria-label="Zoeken in de huidige sectie" autocomplete="off" spellcheck="false">
+        <button id="preferred" data-cmd="preferred" aria-pressed="false">NL + EN</button>
+      </div>
+    </header>
+    <main>
+      <p class="notice" id="notice" role="status"></p>
+      <section id="content"></section>
+    </main>
+  </div>
+  <section id="player" aria-label="Videospeler" hidden>
+    <video id="video" preload="metadata" playsinline></video>
+    <div class="player-top">
+      <h1 id="player-title"></h1>
+      <p id="player-notice" role="status"></p>
+    </div>
+    <div class="player-actions" id="player-actions">
+      <button data-cmd="stop">Terug</button>
+      <button data-cmd="rewind">−10 s</button>
+      <button class="primary" id="player-play" data-cmd="pause">Afspelen / pauze</button>
+      <button data-cmd="forward">+30 s</button>
+      <button id="player-subs" data-cmd="subs">Ondertitels</button>
+      <button id="player-save" data-cmd="save-live">Favoriet</button>
+    </div>
+    <section id="subtitle-panel" class="subtitle-panel" aria-labelledby="subtitle-heading" hidden>
+      <div class="subtitle-header">
+        <h2 id="subtitle-heading">Ondertitels</h2>
+        <button id="subtitle-close" data-cmd="subs-close">Terug</button>
+      </div>
+      <div id="subtitle-tracks" class="track-list"></div>
+      <div id="subtitle-online" class="subtitle-online">
+        <label for="subtitle-query">Online zoeken</label>
+        <div class="subtitle-tools">
+          <input id="subtitle-query" type="search" autocomplete="off" spellcheck="false">
+          <button class="primary" id="subtitle-search-button" data-cmd="subs-search">Zoeken</button>
+        </div>
+      </div>
+      <p id="subtitle-notice" class="notice" role="status"></p>
+      <div id="subtitle-results" class="subtitle-results"></div>
+    </section>
+  </section>
+</body>
+</html>

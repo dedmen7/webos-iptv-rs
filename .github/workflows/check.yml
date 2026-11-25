@@ -1,0 +1,17 @@
+name: Check
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install 1.96.0 --profile minimal --component clippy,rustfmt --target wasm32-unknown-unknown
+      - run: cargo +1.96.0 fmt -- --check
+      - run: cargo +1.96.0 clippy --locked --all-targets -- -D warnings
+      - run: cargo +1.96.0 test --locked
+      - run: cargo +1.96.0 clippy --locked --target wasm32-unknown-unknown --lib -- -D warnings
+      - run: cargo +1.96.0 build --locked --release --lib --target wasm32-unknown-unknown

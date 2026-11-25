@@ -1,0 +1,12 @@
+{
+  "id": "com.dedmen7.orbisiptv",
+  "version": "0.1.0",
+  "vendor": "dedmen7",
+  "type": "web",
+  "main": "index.html",
+  "title": "Orbis IPTV",
+  "icon": "icon.png",
+  "largeIcon": "largeIcon.png",
+  "resolution": "1920x1080",
+  "requiredACG": []
+}
