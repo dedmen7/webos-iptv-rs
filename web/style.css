@@ -123,3 +123,5 @@ video::cue { font-size: 1.25rem; }
 }
 #player[data-controls="false"] .player-actions,
 #player[data-controls="false"] .player-top { visibility: hidden; pointer-events: none; }
+.track-list button[aria-pressed="true"] { color: var(--mint); border-color: var(--mint); }
+.sync-status { flex-basis: 100%; }

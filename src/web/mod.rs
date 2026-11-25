@@ -2,6 +2,7 @@ mod io;
 mod player;
 mod poster;
 mod sources;
+mod timing;
 mod ui;
 
 use crate::{
@@ -118,6 +119,9 @@ struct Playback {
     subtitle_search: u64,
     panel: bool,
     controls_until: i64,
+    sync_enabled: bool,
+    sync: Option<timing::AudioSync>,
+    sync_notice: String,
 }
 
 struct App {

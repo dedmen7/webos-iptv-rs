@@ -72,6 +72,7 @@ pub fn wire(app: &Shared) -> Result<(), JsValue> {
         show_controls(&shared);
     })?;
     let app = app.clone();
+    let shared_for_sync = app.clone();
     let hide_controls = Closure::<dyn FnMut()>::new(move || {
         let state = app.borrow();
         if state
@@ -92,6 +93,23 @@ pub fn wire(app: &Shared) -> Result<(), JsValue> {
             1000,
         )?;
     hide_controls.forget();
+    let samples = shared_for_sync.clone();
+    let sample = Closure::<dyn FnMut()>::new(move || sample_sync(&samples));
+    web_sys::window()
+        .ok_or("Browservenster ontbreekt")?
+        .set_interval_with_callback_and_timeout_and_arguments_0(
+            sample.as_ref().unchecked_ref(),
+            100,
+        )?;
+    sample.forget();
+    let shifted = shared_for_sync.clone();
+    on(&video, "seeking", move |_| {
+        let mut state = shifted.borrow_mut();
+        let time = state.video().current_time();
+        if let Some(timing) = state.playback.as_mut().and_then(|play| play.sync.as_mut()) {
+            timing.skip(time);
+        }
+    })?;
     Ok(())
 }
 
@@ -118,6 +136,9 @@ pub fn start(app: &Shared, item: Item, with_subtitles: bool) {
             subtitle_search: 0,
             panel: false,
             controls_until: io::now() + 6,
+            sync_enabled: true,
+            sync: None,
+            sync_notice: String::new(),
         });
         state
             .element("app")
@@ -224,11 +245,14 @@ pub fn dispatch(app: &Shared, cmd: &str, value: &str) {
         }
         "track" => {
             if let Ok(index) = value.parse::<u32>() {
-                select_track(&app.borrow(), index);
+                let mut state = app.borrow_mut();
+                disable_sync(&mut state);
+                select_track(&state, index);
             }
         }
         "track-off" => {
-            let state = app.borrow();
+            let mut state = app.borrow_mut();
+            disable_sync(&mut state);
             if let Some(tracks) = state.video().text_tracks() {
                 for index in 0..tracks.length() {
                     if let Some(track) = tracks.get(index) {
@@ -237,6 +261,14 @@ pub fn dispatch(app: &Shared, cmd: &str, value: &str) {
                 }
             }
             state.player_note("Ondertitels uit");
+        }
+        "sync-toggle" => {
+            let mut state = app.borrow_mut();
+            if let Some(play) = &mut state.playback {
+                play.sync_enabled = !play.sync_enabled;
+            }
+            configure_sync(&mut state);
+            refresh_tracks(&state);
         }
         "offset" => {
             if let Ok(delta) = value.parse::<f64>() {
@@ -524,6 +556,12 @@ fn refresh_tracks(state: &App) {
             &format!("{:+.1} s", play.subtitle_offset),
         );
         state.button(&panel, "+0,5 s", "offset", "0.5", "");
+        let auto = state.button(&panel, "Auto-sync", "sync-toggle", "", "");
+        let _ = auto.set_attribute(
+            "aria-pressed",
+            if play.sync_enabled { "true" } else { "false" },
+        );
+        state.node(&panel, "span", "muted sync-status", &play.sync_notice);
     }
     if let Some((command, value)) = active
         && let Ok(buttons) = panel.query_selector_all("button")
@@ -682,7 +720,9 @@ fn load_subtitle(app: &Shared, subtitle: Subtitle) {
             Ok(body) => {
                 play.selected_subtitle = Some((subtitle, body));
                 play.subtitle_offset = 0.;
+                play.sync = None;
                 let message = if apply_online(&mut state) {
+                    configure_sync(&mut state);
                     "Ondertitels geselecteerd"
                 } else {
                     "Dit ondertitelbestand kan niet worden gelezen."
@@ -700,11 +740,82 @@ fn load_subtitle(app: &Shared, subtitle: Subtitle) {
 
 fn shift(app: &Shared, delta: f64) {
     let mut state = app.borrow_mut();
+    disable_sync(&mut state);
     let Some(play) = &mut state.playback else {
         return;
     };
     play.subtitle_offset = (play.subtitle_offset + delta).clamp(-120., 120.);
     let _ = apply_online(&mut state);
+}
+
+fn disable_sync(state: &mut App) {
+    if let Some(play) = &mut state.playback {
+        play.sync_enabled = false;
+        play.sync = None;
+        play.sync_notice = "Automatische synchronisatie uit".to_owned();
+    }
+}
+
+fn configure_sync(state: &mut App) {
+    let video = state.video();
+    let Some(play) = &mut state.playback else {
+        return;
+    };
+    if !play.sync_enabled {
+        disable_sync(state);
+        return;
+    }
+    let Some((_, body)) = &play.selected_subtitle else {
+        return;
+    };
+    let cues = subtitles::sync_cues(body);
+    match super::timing::AudioSync::start(&video, cues) {
+        Ok(sync) => {
+            play.sync = Some(sync);
+            play.sync_notice = "Timing meten tijdens afspelen…".to_owned();
+        }
+        Err(_) => {
+            play.sync = None;
+            play.sync_notice =
+                "Automatische controle niet beschikbaar voor deze stream.".to_owned();
+        }
+    }
+}
+
+fn sample_sync(app: &Shared) {
+    let mut state = app.borrow_mut();
+    let video = state.video();
+    if video.paused() || video.seeking() {
+        return;
+    }
+    let Some(play) = &mut state.playback else {
+        return;
+    };
+    let Some(estimate) = play
+        .sync
+        .as_mut()
+        .and_then(|sync| sync.sample(video.current_time(), play.subtitle_offset))
+    else {
+        return;
+    };
+    let mut apply = false;
+    if let Some(estimate) = estimate {
+        let difference = estimate.offset - play.subtitle_offset;
+        if difference.abs() >= 0.25 {
+            play.subtitle_offset = estimate.offset.clamp(-120., 120.);
+            play.sync_notice = format!("Automatisch bijgesteld: {:+.1} s", play.subtitle_offset);
+            apply = true;
+        } else {
+            play.sync_notice = "Timing gecontroleerd".to_owned();
+        }
+    } else {
+        play.sync_notice = "Geen betrouwbare afwijking gemeten".to_owned();
+    }
+    if apply {
+        let _ = apply_online(&mut state);
+    } else {
+        refresh_tracks(&state);
+    }
 }
 
 fn apply_online(state: &mut App) -> bool {

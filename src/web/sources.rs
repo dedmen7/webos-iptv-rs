@@ -85,7 +85,10 @@ fn os_headers(key: &str) -> [(&str, &str); 3] {
     [
         ("Api-Key", key),
         ("Content-Type", "application/json"),
-        ("User-Agent", "webos-iptv-rs v0.1.0"),
+        (
+            "User-Agent",
+            concat!("webos-iptv-rs v", env!("CARGO_PKG_VERSION")),
+        ),
     ]
 }
 

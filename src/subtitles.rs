@@ -201,14 +201,13 @@ pub fn rank(results: &mut Vec<Subtitle>) {
     results.truncate(60);
 }
 
-pub fn webvtt(input: &str, offset: f64) -> Option<String> {
-    let input = input
+fn cues_and_text(input: &str) -> Vec<(crate::sync::Cue, String)> {
+    let normalized = input
         .trim_start_matches('\u{feff}')
         .replace("\r\n", "\n")
         .replace('\r', "\n");
-    let mut output = String::from("WEBVTT\n\n");
-    let mut cues = 0;
-    for block in input.split("\n\n") {
+    let mut cues = Vec::new();
+    for block in normalized.split("\n\n") {
         let mut lines = block.lines().skip_while(|line| !line.contains("-->"));
         let Some(timeline) = lines.next() else {
             continue;
@@ -222,24 +221,40 @@ pub fn webvtt(input: &str, offset: f64) -> Option<String> {
         let Some(end) = end.split_whitespace().next().and_then(seconds) else {
             continue;
         };
-        let start = start + offset;
-        let end = end + offset;
-        if end <= 0.0 || start >= end {
-            continue;
-        }
         let text = lines.collect::<Vec<_>>().join("\n");
-        if text.trim().is_empty() {
+        if start < end && !text.trim().is_empty() {
+            cues.push((crate::sync::Cue { start, end }, text));
+        }
+    }
+    cues.sort_by(|(left, _), (right, _)| left.start.total_cmp(&right.start));
+    cues
+}
+
+pub fn sync_cues(input: &str) -> Vec<crate::sync::Cue> {
+    cues_and_text(input)
+        .into_iter()
+        .map(|(cue, _)| cue)
+        .collect()
+}
+
+pub fn webvtt(input: &str, offset: f64) -> Option<String> {
+    let mut output = String::from("WEBVTT\n\n");
+    let mut count = 0;
+    for (cue, text) in cues_and_text(input) {
+        let start = cue.start + offset;
+        let end = cue.end + offset;
+        if end <= 0. {
             continue;
         }
         output.push_str(&format!(
             "{} --> {}\n{}\n\n",
-            timestamp(start.max(0.0)),
+            timestamp(start.max(0.)),
             timestamp(end),
             text
         ));
-        cues += 1;
+        count += 1;
     }
-    (cues > 0).then_some(output)
+    (count > 0).then_some(output)
 }
 
 fn seconds(time: &str) -> Option<f64> {
