@@ -1,4 +1,4 @@
-use crate::sync::{self, Alignment, AudioSample, Cue};
+use crate::sync::{self, AudioSample, Cue, Timing, TimingPoint};
 use js_sys::{Function, Reflect};
 use std::collections::VecDeque;
 use wasm_bindgen::{JsCast, JsValue};
@@ -13,8 +13,12 @@ const RECHECK_SECONDS: f64 = 12.;
 pub struct AudioSync {
     context: AudioContext,
     audio: MediaStream,
+    track: MediaStreamTrack,
     analyser: AnalyserNode,
     cues: Vec<Cue>,
+    scaled_cues: Vec<Cue>,
+    cue_rate: f64,
+    points: VecDeque<TimingPoint>,
     samples: VecDeque<AudioSample>,
     last_check: f64,
     bins: [u8; 512],
@@ -34,9 +38,7 @@ impl AudioSync {
             video_track.stop();
         }
         let tracks = stream.get_audio_tracks();
-        if tracks.length() == 0 {
-            return Err(JsValue::from_str("Geen audiospoor"));
-        }
+        let track: MediaStreamTrack = tracks.get(0).dyn_into()?;
         let audio = MediaStream::new_with_tracks(&tracks)?;
         let context = AudioContext::new()?;
         let analyser = match connect(&context, &audio) {
@@ -51,8 +53,12 @@ impl AudioSync {
         Ok(Self {
             context,
             audio,
+            track,
             analyser,
             cues,
+            scaled_cues: Vec::new(),
+            cue_rate: 1.,
+            points: VecDeque::with_capacity(3),
             samples: VecDeque::with_capacity(650),
             last_check: video.current_time(),
             bins: [0; 512],
@@ -61,11 +67,16 @@ impl AudioSync {
 
     pub fn skip(&mut self, time: f64) {
         self.samples.clear();
+        self.points.clear();
         self.last_check = time;
     }
 
-    pub fn sample(&mut self, time: f64, offset: f64) -> Option<Option<Alignment>> {
-        if self.context.state() != AudioContextState::Running || !time.is_finite() {
+    pub fn available(&self) -> bool {
+        self.context.state() == AudioContextState::Running && !self.track.muted()
+    }
+
+    pub fn sample(&mut self, time: f64, timing: Timing) -> Option<Option<Timing>> {
+        if !time.is_finite() {
             return None;
         }
         if let Some(previous) = self.samples.back() {
@@ -93,11 +104,48 @@ impl AudioSync {
             return None;
         }
         self.last_check = time;
-        Some(sync::align(
-            &self.cues,
-            self.samples.make_contiguous(),
-            offset,
-        ))
+        if timing.rate != self.cue_rate {
+            self.cue_rate = timing.rate;
+            self.scaled_cues.clear();
+            if self.cue_rate != 1. {
+                self.scaled_cues.extend(self.cues.iter().map(|cue| Cue {
+                    start: cue.start * self.cue_rate,
+                    end: cue.end * self.cue_rate,
+                }));
+            }
+        }
+        let center = (self.samples.front()?.time + time) * 0.5;
+        let cues = if self.cue_rate == 1. {
+            &self.cues
+        } else {
+            &self.scaled_cues
+        };
+        let samples = self.samples.make_contiguous();
+        let alignment = sync::align(cues, samples, timing.offset);
+        if self
+            .points
+            .back()
+            .is_none_or(|previous| center - previous.video >= WINDOW_SECONDS)
+            && let Some(point) = sync::measure_point(cues, samples, timing, alignment)
+        {
+            if self.points.len() == 3 {
+                self.points.pop_front();
+            }
+            self.points.push_back(point);
+            if self.points.len() == 3
+                && let Some(fit) =
+                    sync::fit_rate([self.points[0], self.points[1], self.points[2]], timing)
+            {
+                return Some(Some(fit));
+            }
+        }
+        Some(alignment.map(|alignment| {
+            Timing {
+                offset: alignment.offset,
+                ..timing
+            }
+            .bounded()
+        }))
     }
 }
 

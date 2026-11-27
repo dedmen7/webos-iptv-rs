@@ -1,12 +1,15 @@
 {
   "id": "com.dedmen7.orbisiptv",
-  "version": "0.1.1",
+  "version": "0.1.57",
   "vendor": "dedmen7",
   "type": "web",
   "main": "index.html",
   "title": "Orbis IPTV",
   "icon": "icon.png",
   "largeIcon": "largeIcon.png",
+  "iconColor": "#103027",
+  "splashBackground": "splash.png",
   "resolution": "1920x1080",
+  "disableBackHistoryAPI": true,
   "requiredACG": []
 }

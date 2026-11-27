@@ -21,6 +21,15 @@ const SEARCH_RANGE: f64 = 12.;
 const MIN_WINDOW: f64 = 36.;
 
 pub fn align(cues: &[Cue], samples: &[AudioSample], current_offset: f64) -> Option<Alignment> {
+    align_scaled(cues, samples, current_offset, 1.)
+}
+
+fn align_scaled(
+    cues: &[Cue],
+    samples: &[AudioSample],
+    current_offset: f64,
+    scale: f64,
+) -> Option<Alignment> {
     let (first, last) = (samples.first()?.time, samples.last()?.time);
     let duration = last - first;
     if duration < MIN_WINDOW || samples.len() as f64 / duration < 6. {
@@ -55,7 +64,10 @@ pub fn align(cues: &[Cue], samples: &[AudioSample], current_offset: f64) -> Opti
     };
     let cue_window: Vec<_> = cues
         .iter()
-        .copied()
+        .map(|cue| Cue {
+            start: cue.start * scale,
+            end: cue.end * scale,
+        })
         .filter(|cue| {
             cue.end - cue.start <= 9.
                 && cue.end + current_offset + SEARCH_RANGE > first
@@ -144,4 +156,109 @@ fn score(cues: &[Cue], window: &Window<'_>, offset: f64) -> Option<f64> {
         return None;
     }
     Some((inside_sum / n - fraction * avg) / (fraction * (1. - fraction) * variance).sqrt())
+}
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+pub struct Timing {
+    pub offset: f64,
+    #[serde(default = "normal_rate")]
+    pub rate: f64,
+}
+
+const MIN_RATE: f64 = 0.94;
+const MAX_RATE: f64 = 1.06;
+const MAX_OFFSET: f64 = 120.;
+
+fn normal_rate() -> f64 {
+    1.
+}
+
+impl Default for Timing {
+    fn default() -> Self {
+        Self {
+            offset: 0.,
+            rate: normal_rate(),
+        }
+    }
+}
+
+impl Timing {
+    pub fn bounded(self) -> Self {
+        Self {
+            offset: if self.offset.is_finite() {
+                self.offset.clamp(-MAX_OFFSET, MAX_OFFSET)
+            } else {
+                0.
+            },
+            rate: if (MIN_RATE..=MAX_RATE).contains(&self.rate) {
+                self.rate
+            } else {
+                normal_rate()
+            },
+        }
+    }
+
+    pub fn video_time(self, subtitle_time: f64) -> f64 {
+        subtitle_time * self.rate + self.offset
+    }
+
+    pub fn subtitle_time(self, video_time: f64) -> f64 {
+        (video_time - self.offset) / self.rate
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct TimingPoint {
+    pub subtitle: f64,
+    pub video: f64,
+}
+
+pub fn measure_point(
+    scaled_cues: &[Cue],
+    samples: &[AudioSample],
+    current: Timing,
+    alignment: Option<Alignment>,
+) -> Option<TimingPoint> {
+    let video = (samples.first()?.time + samples.last()?.time) / 2.;
+    let to_point = |offset, rate| TimingPoint {
+        subtitle: Timing { offset, rate }.subtitle_time(video),
+        video,
+    };
+    let mut candidates = [current.rate, 25. / 24., 24. / 25.].map(|rate| {
+        let alignment = if rate == current.rate {
+            alignment
+        } else {
+            align_scaled(scaled_cues, samples, current.offset, rate / current.rate)
+        }?;
+        (alignment.confidence >= 0.5)
+            .then(|| (alignment.confidence, to_point(alignment.offset, rate)))
+    });
+    let confidence = |point: &Option<(f64, TimingPoint)>| point.map_or(0., |(score, _)| score);
+    candidates.sort_by(|left, right| confidence(right).total_cmp(&confidence(left)));
+    let (best_score, best) = candidates[0]?;
+    let ambiguous = candidates.iter().flatten().skip(1).any(|(score, other)| {
+        best_score - score < 0.08 && (best.subtitle - other.subtitle).abs() > 0.75
+    });
+    (!ambiguous).then_some(best)
+}
+
+pub fn fit_rate([first, middle, last]: [TimingPoint; 3], current: Timing) -> Option<Timing> {
+    let first_span = middle.subtitle - first.subtitle;
+    let last_span = last.subtitle - middle.subtitle;
+    if first_span < 60. || last_span < 60. {
+        return None;
+    }
+    let first_rate = (middle.video - first.video) / first_span;
+    let last_rate = (last.video - middle.video) / last_span;
+    if !(MIN_RATE..=MAX_RATE).contains(&first_rate) || (last_rate - first_rate).abs() > 0.004 {
+        return None;
+    }
+    let rate = (last.video - first.video) / (last.subtitle - first.subtitle);
+    let offset = last.video - rate * last.subtitle;
+    let fit = Timing { offset, rate };
+    ((rate - current.rate).abs() * (last.subtitle - first.subtitle) >= 0.75
+        && (fit.video_time(middle.subtitle) - middle.video).abs() <= 0.45
+        && fit == fit.bounded())
+    .then_some(fit)
 }

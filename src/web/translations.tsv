@@ -1,0 +1,203 @@
+Aanbieder	Provider	Anbieter	Fournisseur
+Aflevering	Episode	Folge	Épisode
+Afleveringen laden…	Loading episodes…	Folgen werden geladen…	Chargement des épisodes…
+Afspelen	Play	Wiedergabe	Lire
+Afspelen…	Starting playback…	Wiedergabe startet…	Démarrage de la lecture…
+Afspelen / pauze	Play / pause	Wiedergabe / Pause	Lecture / pause
+Afspelen kon niet starten. Controleer de stream en probeer opnieuw.	Playback couldn't start. Check the stream and try again.	Die Wiedergabe konnte nicht starten. Prüfe den Stream und versuche es erneut.	La lecture n’a pas démarré. Vérifiez le flux et réessayez.
+Alle categorieën	All categories	Alle Kategorien	Toutes les catégories
+Alles	All	Alle	Tout
+Annuleren	Cancel	Abbrechen	Annuler
+Antwoord lezen mislukt	Couldn't read the response	Die Antwort konnte nicht gelesen werden	Impossible de lire la réponse
+Audio · {label}	Audio · {label}	Ton · {label}	Audio · {label}
+Audiospoor gewijzigd	Audio track changed	Tonspur gewechselt	Piste audio modifiée
+Automatisch bijgesteld: {offset} s	Automatically adjusted by {offset} s	Automatisch um {offset} s angepasst	Ajustement automatique de {offset} s
+Automatische controle niet beschikbaar voor deze stream.	Automatic sync is unavailable for this stream.	Automatische Synchronisierung ist für diesen Stream nicht verfügbar.	La synchronisation automatique est indisponible pour ce flux.
+Automatische synchronisatie uit	Automatic sync off	Automatische Synchronisierung aus	Synchronisation automatique désactivée
+Bewaar in mijn lijst	Add to My List	Zu meiner Liste hinzufügen	Ajouter à ma liste
+Beste match	Best match	Beste Übereinstimmung	Meilleure correspondance
+Bron antwoordt met HTTP {status}	The source returned HTTP {status}	Die Quelle meldet HTTP {status}	La source a renvoyé HTTP {status}
+Bron instellen	Set up source	Quelle einrichten	Configurer une source
+Bron niet bereikbaar of de browser blokkeert de aanvraag	The source is unreachable or the browser blocked the request	Die Quelle ist nicht erreichbar oder der Browser blockiert die Anfrage	La source est inaccessible ou le navigateur a bloqué la requête
+Bron toevoegen	Add source	Quelle hinzufügen	Ajouter une source
+Browservenster ontbreekt	Browser window unavailable	Browserfenster nicht verfügbar	Fenêtre du navigateur indisponible
+Catalogus bijgewerkt.	Catalog updated.	Katalog aktualisiert.	Catalogue mis à jour.
+Catalogus kon niet worden opgeslagen.	Couldn't save the catalog.	Der Katalog konnte nicht gespeichert werden.	Impossible d’enregistrer le catalogue.
+Catalogus laden…	Loading catalog…	Katalog wird geladen…	Chargement du catalogue…
+Categorie	Category	Kategorie	Catégorie
+Categorieën konden niet worden geladen.	Couldn't load categories.	Kategorien konnten nicht geladen werden.	Impossible de charger les catégories.
+De M3U-lijst bevat geen XMLTV-link	The M3U playlist has no XMLTV link	Die M3U-Liste enthält keinen XMLTV-Link	La liste M3U ne contient aucun lien XMLTV
+De aanbieder gaf geen bruikbare titels terug.	The provider returned no playable titles.	Der Anbieter hat keine verwendbaren Titel geliefert.	Le fournisseur n’a renvoyé aucun titre utilisable.
+De aanbieder gaf geen catalogus terug. Controleer je inloggegevens.	The provider returned no catalog. Check your sign-in details.	Der Anbieter hat keinen Katalog geliefert. Prüfe deine Zugangsdaten.	Le fournisseur n’a renvoyé aucun catalogue. Vérifiez vos identifiants.
+De bron gaf geen geldige JSON terug	The source returned invalid JSON	Die Quelle hat ungültiges JSON geliefert	La source a renvoyé un JSON non valide
+De catalogus is onvolledig ontvangen	The catalog download was incomplete	Der Katalog wurde unvollständig empfangen	Le téléchargement du catalogue est incomplet
+De ondertitelbron geeft geen beveiligde downloadlink	The subtitle provider didn't return a secure download link	Der Untertitelanbieter hat keinen sicheren Downloadlink geliefert	La source de sous-titres n’a fourni aucun lien de téléchargement sécurisé
+De zender komt eraan…	Your channel is on its way…	Der Sender ist gleich da…	Votre chaîne arrive…
+Deze stream kon niet worden afgespeeld.	Couldn't play this stream.	Dieser Stream konnte nicht abgespielt werden.	Ce flux n’a pas pu être lu.
+Deze titel heeft geen geldige afspeellink.	This title has no valid playback link.	Dieser Titel hat keinen gültigen Wiedergabelink.	Ce titre ne contient aucun lien de lecture valide.
+Dit bestand is geen geldige XMLTV-gids	This file isn't a valid XMLTV guide	Diese Datei ist kein gültiger XMLTV-Programmführer	Ce fichier n’est pas un guide XMLTV valide
+Dit ondertitelbestand kan niet worden gelezen.	Couldn't read this subtitle file.	Diese Untertiteldatei konnte nicht gelesen werden.	Ce fichier de sous-titres est illisible.
+Dit programma is niet beschikbaar om terug te kijken.	This program isn't available for catch-up.	Diese Sendung ist nicht zum Nachholen verfügbar.	Ce programme n’est pas disponible en replay.
+Document ontbreekt	Document unavailable	Dokument nicht verfügbar	Document indisponible
+Eerder	Earlier	Früher	Plus tôt
+Einde van deze titel	End of this title	Ende dieses Titels	Fin de ce titre
+English	English	Englisch	Anglais
+Even de antenne rechtzetten…	Adjusting the antenna…	Wir richten kurz die Antenne aus…	Un petit réglage d’antenne…
+Film	Movie	Film	Film
+Films	Movies	Filme	Films
+Gebruik een geldige HTTP- of HTTPS-link.	Enter a valid HTTP or HTTPS link.	Gib einen gültigen HTTP- oder HTTPS-Link ein.	Saisissez un lien HTTP ou HTTPS valide.
+Gebruikersnaam	Username	Benutzername	Nom d’utilisateur
+Geen Nederlandse of Engelse ondertitels gevonden.	No Dutch or English subtitles found.	Keine niederländischen oder englischen Untertitel gefunden.	Aucun sous-titre néerlandais ou anglais trouvé.
+De geteste ondertitel past niet bij de speelduur.	The tested subtitle doesn't match the playback duration.	Der geprüfte Untertitel passt nicht zur Laufzeit.	Le sous-titre vérifié ne correspond pas à la durée.
+Geen afleveringen gevonden.	No episodes found.	Keine Folgen gefunden.	Aucun épisode trouvé.
+Geen audiospoor	No audio track	Keine Tonspur	Aucune piste audio
+Geen betrouwbare afwijking gemeten	No reliable offset detected	Keine zuverlässige Abweichung gemessen	Aucun décalage fiable détecté
+Geen downloadlink ontvangen	No download link received	Kein Downloadlink empfangen	Aucun lien de téléchargement reçu
+Geen kanalen gevonden in deze M3U-lijst	No channels found in this M3U playlist	Keine Sender in dieser M3U-Liste gefunden	Aucune chaîne trouvée dans cette liste M3U
+Geen lopend programma in de gids.	No current program in the guide.	Keine laufende Sendung im Programmführer.	Aucun programme en cours dans le guide.
+Geen programma's gevonden.	No programs found.	Keine Sendungen gefunden.	Aucun programme trouvé.
+Geen programma-informatie beschikbaar.	No program information available.	Keine Programminformationen verfügbar.	Aucune information sur le programme.
+Geen resultaten gevonden.	No results found.	Keine Ergebnisse gefunden.	Aucun résultat trouvé.
+Geen titels in deze lijst.	No titles in this list.	Keine Titel in dieser Liste.	Aucun titre dans cette liste.
+Geen zenders beschikbaar.	No channels available.	Keine Sender verfügbar.	Aucune chaîne disponible.
+Gids	Guide	Programm	Guide
+Gezien	Watched	Gesehen	Vu
+Hele gids	Full Guide	Vollständiger Programmführer	Guide complet
+Hoger	Move up	Nach oben	Monter
+Hoofdnavigatie	Main navigation	Hauptnavigation	Navigation principale
+Instellingen opslaan mislukt op dit apparaat.	Couldn't save settings on this device.	Einstellungen konnten auf diesem Gerät nicht gespeichert werden.	Impossible d’enregistrer les réglages sur cet appareil.
+Orbis kon de beveiligde opslag niet openen.	Orbis couldn't open secure storage.	Orbis konnte den geschützten Speicher nicht öffnen.	Orbis n’a pas pu accéder au stockage sécurisé.
+Privacy	Privacy	Datenschutz	Confidentialité
+Orbis bewaart je tv-bronnen, ondertitelsleutels en kijkgeschiedenis versleuteld op je tv. Orbis gebruikt geen advertenties of gebruiksstatistieken.	Orbis stores your TV sources, subtitle keys, and watch history in encrypted storage on your TV. Orbis uses no ads or usage analytics.	Orbis speichert deine TV-Quellen, Untertitelschlüssel und deinen Wiedergabeverlauf verschlüsselt auf deinem Fernseher. Orbis verwendet weder Werbung noch Nutzungsanalysen.	Orbis conserve vos sources TV, vos clés de sous-titres et votre historique de visionnage sous forme chiffrée sur votre téléviseur. Orbis n’utilise ni publicité ni statistiques d’utilisation.
+Je tv vraagt lijsten, programma’s, afbeeldingen en streams rechtstreeks op bij je aanbieder of de bijbehorende servers. Voor online ondertitels vraagt je tv met jouw sleutel een titel of aflevering op bij OpenSubtitles of SubDL.	Your TV requests playlists, program listings, images, and streams directly from your provider or its associated servers. For online subtitles, your TV uses your key to look up a title or episode on OpenSubtitles or SubDL.	Dein Fernseher ruft Wiedergabelisten, Programmdaten, Bilder und Streams direkt bei deinem Anbieter oder den zugehörigen Servern ab. Für Online-Untertitel sucht dein Fernseher mit deinem Schlüssel bei OpenSubtitles oder SubDL nach einem Titel oder einer Folge.	Votre téléviseur récupère les listes, les programmes, les images et les flux directement auprès de votre fournisseur ou des serveurs associés. Pour les sous-titres en ligne, votre téléviseur utilise votre clé pour rechercher un titre ou un épisode sur OpenSubtitles ou SubDL.
+Onder Tv-bron kun je een bron verwijderen. Je kunt je ondertitelsleutels wissen onder Online ondertitels. Verwijder de appgegevens op je tv om ook lokaal opgeslagen kijkgegevens en caches te wissen.	You can remove a source under TV source and clear your subtitle keys under Online subtitles. Clear the app data on your TV to remove locally stored watch history and cached content as well.	Unter TV-Quelle kannst du eine Quelle entfernen. Unter Online-Untertitel kannst du deine Untertitelschlüssel löschen. Lösche die App-Daten auf deinem Fernseher, um auch den lokal gespeicherten Wiedergabeverlauf und zwischengespeicherte Inhalte zu entfernen.	Vous pouvez supprimer une source dans Source TV et effacer vos clés dans Sous-titres en ligne. Effacez les données de l’application sur votre téléviseur pour supprimer également l’historique et le contenu mis en cache localement.
+Voor vragen over privacy kun je contact opnemen met dedmen7 via GitHub.	For privacy questions, you can contact dedmen7 on GitHub.	Bei Fragen zum Datenschutz kannst du dedmen7 auf GitHub kontaktieren.	Pour toute question sur la confidentialité, vous pouvez contacter dedmen7 sur GitHub.
+Instellingen	Settings	Einstellungen	Paramètres
+Kies wat je van je IPTV-aanbieder hebt gekregen.	Choose the sign-in details your IPTV provider gave you.	Wähle die Zugangsdaten, die du von deinem IPTV-Anbieter erhalten hast.	Choisissez les identifiants fournis par votre fournisseur IPTV.
+Kijk live	Watch live	Live ansehen	Regarder en direct
+Kijkvoortgang	Watch progress	Wiedergabefortschritt	Progression de lecture
+Laatst bekeken · {episode}	Last watched · {episode}	Zuletzt gesehen · {episode}	Dernier épisode regardé · {episode}
+Laatst bekeken	Last watched	Zuletzt gesehen	Dernier visionnage
+Lager	Move down	Nach unten	Descendre
+Later	Later	Später	Plus tard
+Live	Live	Live	Direct
+Laden…	Loading…	Wird geladen…	Chargement…
+M3U-link	M3U link	M3U-Link	Lien M3U
+Markeer als gezien	Mark as watched	Als gesehen markieren	Marquer comme vu
+Markeer als ongezien	Mark as not watched	Als ungesehen markieren	Marquer comme non vu
+Mijn lijst opslaan mislukt op dit apparaat.	Couldn't save My List on this device.	Meine Liste konnte auf diesem Gerät nicht gespeichert werden.	Impossible d’enregistrer Ma liste sur cet appareil.
+Mijn lijst	My List	Meine Liste	Ma liste
+Naam	Name	Name	Nom
+Nederlands	Dutch	Niederländisch	Néerlandais
+Nog {minutes} min	{minutes} min left	Noch {minutes} Min.	{minutes} min restantes
+Nu	Now	Jetzt	En cours
+Nu en straks	Now and next	Jetzt und danach	En cours et à suivre
+Ondertitels downloaden…	Downloading subtitles…	Untertitel werden heruntergeladen…	Téléchargement des sous-titres…
+Ondertitels geselecteerd	Subtitles selected	Untertitel ausgewählt	Sous-titres sélectionnés
+Ondertitels uit	Subtitles off	Untertitel aus	Sous-titres désactivés
+Ondertitels zoeken…	Searching for subtitles…	Untertitel werden gesucht…	Recherche de sous-titres…
+Ondertitels	Subtitles	Untertitel	Sous-titres
+Ondertitelsporen ontbreken	Subtitle tracks unavailable	Untertitelspuren nicht verfügbar	Pistes de sous-titres indisponibles
+Ongeldig antwoord	Invalid response	Ungültige Antwort	Réponse non valide
+Ongeldig ondertitel-ID	Invalid subtitle ID	Ungültige Untertitel-ID	Identifiant de sous-titre non valide
+Ongeldige M3U-link	Invalid M3U link	Ungültiger M3U-Link	Lien M3U non valide
+Ongeldige aanvraag	Invalid request	Ungültige Anfrage	Requête non valide
+Ongeldige aanvraagheader	Invalid request header	Ungültiger Anfrage-Header	En-tête de requête non valide
+Ongeldige server-URL	Invalid server URL	Ungültige Server-URL	URL du serveur non valide
+Online ondertitels	Online subtitles	Online-Untertitel	Sous-titres en ligne
+Online zoeken	Search online	Online suchen	Rechercher en ligne
+OpenSubtitles API-sleutel	OpenSubtitles API key	OpenSubtitles-API-Schlüssel	Clé API OpenSubtitles
+Opslaan	Save	Speichern	Enregistrer
+Orbis instellen	Set up Orbis	Orbis einrichten	Configurer Orbis
+Orbis IPTV starten…	Starting Orbis IPTV…	Orbis IPTV startet…	Démarrage d’Orbis IPTV…
+Orbis zoekt beeld…	Orbis is looking for a picture…	Orbis sucht nach einem Bild…	Orbis recherche l’image…
+Pagina ontbreekt	Page unavailable	Seite nicht verfügbar	Page indisponible
+Programma-informatie ophalen…	Getting program information…	Programminformationen werden geladen…	Chargement des informations sur le programme…
+Programma-informatie via Hele gids.	Open Full Guide for program information.	Programminformationen findest du im vollständigen Programmführer.	Consultez le Guide complet pour les informations sur le programme.
+Programma-informatie via Snelle gids.	Open Quick Guide for program information.	Programminformationen findest du im Schnellprogramm.	Consultez le Guide rapide pour les informations sur le programme.
+Programma zoeken	Search programs	Sendungen suchen	Rechercher un programme
+Programmagids	Program Guide	Programmführer	Guide TV
+Programma’s laden…	Loading programs…	Sendungen werden geladen…	Chargement des programmes…
+Radio	Radio	Radio	Radio
+Radiospeler	Radio player	Radioplayer	Lecteur radio
+Radiozender laden…	Loading radio station…	Radiosender wird geladen…	Chargement de la station de radio…
+Schermtoetsenbord	On-screen keyboard	Bildschirmtastatur	Clavier à l’écran
+Seizoen {season}	Season {season}	Staffel {season}	Saison {season}
+Seizoen	Season	Staffel	Saison
+Selecteer een Xtream-account	Select an Xtream account	Wähle ein Xtream-Konto	Sélectionnez un compte Xtream
+Serie	Series	Serie	Série
+Series	Series	Serien	Séries
+Snelle gids	Quick Guide	Schnellprogramm	Guide rapide
+Spatie	Space	Leerzeichen	Espace
+Stel een XMLTV-link in om de gids te laden	Add an XMLTV link to load the guide	Lege einen XMLTV-Link fest, um den Programmführer zu laden	Ajoutez un lien XMLTV pour charger le guide
+Straks	Up next	Danach	À suivre
+SubDL API-sleutel	SubDL API key	SubDL-API-Schlüssel	Clé API SubDL
+SubDL accepteerde de aanvraag niet	SubDL rejected the request	SubDL hat die Anfrage abgelehnt	SubDL a refusé la requête
+Te weinig ondertitelregels	Too few subtitle cues	Zu wenige Untertitelzeilen	Nombre insuffisant de sous-titres
+Tekstgrootte	Text size	Textgröße	Taille du texte
+Terug	Back	Zurück	Retour
+Terugkijken	Catch-up	Replay	Replay
+Tijdsbalk	Playback timeline	Wiedergabezeitleiste	Barre de lecture
+Timing gecontroleerd	Timing checked	Timing geprüft	Synchronisation vérifiée
+Timing meten tijdens afspelen…	Checking timing during playback…	Timing wird während der Wiedergabe geprüft…	Vérification de la synchronisation pendant la lecture…
+Tonen	Show	Anzeigen	Afficher
+Tv-bron {id}	TV source {id}	TV-Quelle {id}	Source TV {id}
+Tv-bron	TV source	TV-Quelle	Source TV
+Uit	Off	Aus	Désactivé
+Verbergen	Hide	Ausblenden	Masquer
+Verbinding herstellen…	Reconnecting…	Verbindung wird wiederhergestellt…	Reconnexion…
+Verbinding instellen mislukt	Couldn't set up the connection	Die Verbindung konnte nicht eingerichtet werden	Impossible d’établir la connexion
+Verder kijken	Continue watching	Weiterschauen	Reprendre la lecture
+Verder vanaf {time}	Resume from {time}	Weiter bei {time}	Reprendre à {time}
+Verversen	Refresh	Aktualisieren	Actualiser
+Verwijder uit mijn lijst	Remove from My List	Aus meiner Liste entfernen	Retirer de ma liste
+Verwijder {name}	Remove {name}	{name} entfernen	Supprimer {name}
+Verwijderen	Remove	Entfernen	Supprimer
+Videospeler	Video player	Videoplayer	Lecteur vidéo
+Voeg een API-sleutel toe bij Instellingen	Add an API key in Settings	Füge einen API-Schlüssel in den Einstellungen hinzu	Ajoutez une clé API dans les paramètres
+Voeg een Xtream-account toe in Instellingen	Add an Xtream account in Settings	Füge ein Xtream-Konto in den Einstellungen hinzu	Ajoutez un compte Xtream dans les paramètres
+Volgende aflevering · na {episode}	Next episode · after {episode}	Nächste Folge · nach {episode}	Épisode suivant · après {episode}
+Volgende aflevering	Next episode	Nächste Folge	Épisode suivant
+Volgende dag	Next day	Nächster Tag	Jour suivant
+Volgende zenders	Next channels	Nächste Sender	Chaînes suivantes
+Volgende	Next	Weiter	Suivant
+Voortgang programma	Program progress	Sendungsfortschritt	Progression du programme
+Vorige dag	Previous day	Vorheriger Tag	Jour précédent
+Vorige zenders	Previous channels	Vorherige Sender	Chaînes précédentes
+Vorige	Previous	Zurück	Précédent
+Vul een Xtream-server of een M3U-link in.	Enter an Xtream server or M3U link.	Gib einen Xtream-Server oder M3U-Link ein.	Saisissez un serveur Xtream ou un lien M3U.
+Vul ook de Xtream-gebruikersnaam en het wachtwoord in.	Enter your Xtream username and password.	Gib deinen Xtream-Benutzernamen und dein Passwort ein.	Saisissez votre nom d’utilisateur et votre mot de passe Xtream.
+Wachtwoord	Password	Passwort	Mot de passe
+Wissen	Clear	Löschen	Effacer
+XMLTV-link	XMLTV link	XMLTV-Link	Lien XMLTV
+Xtream-account	Xtream account	Xtream-Konto	Compte Xtream
+Xtream-server	Xtream server	Xtream-Server	Serveur Xtream
+Zender	Channel	Sender	Chaîne
+Zendergroep kiezen	Choose a channel group	Sendergruppe auswählen	Choisir un groupe de chaînes
+Zendergroepen konden niet worden geladen.	Couldn't load channel groups.	Sendergruppen konnten nicht geladen werden.	Impossible de charger les groupes de chaînes.
+Zendergroepen	Channel groups	Sendergruppen	Groupes de chaînes
+Zenders laden…	Loading channels…	Sender werden geladen…	Chargement des chaînes…
+Actie	Action	Action	Action
+Alle genres	All genres	Alle Genres	Tous les genres
+Animatie	Animation	Animation	Animation
+Avontuur	Adventure	Abenteuer	Aventure
+Documentaire	Documentary	Dokumentation	Documentaire
+Drama	Drama	Drama	Drame
+Familie	Family	Familie	Familial
+Fantasy	Fantasy	Fantasy	Fantastique
+Genre	Genre	Genre	Genre
+Geschiedenis	History	Historisch	Historique
+Horror	Horror	Horror	Horreur
+Komedie	Comedy	Komödie	Comédie
+Misdaad	Crime	Krimi	Policier
+Mysterie	Mystery	Mystery	Mystère
+Oorlog	War	Krieg	Guerre
+Romantiek	Romance	Romantik	Romance
+Sciencefiction	Science fiction	Science-Fiction	Science-fiction
+Thriller	Thriller	Thriller	Thriller
+Western	Western	Western	Western
+Zoeken in de huidige sectie	Search this section	Diesen Bereich durchsuchen	Rechercher dans cette section
+Zoeken in {section}	Search in {section}	In {section} suchen	Rechercher dans {section}
+Zoeken	Search	Suchen	Rechercher
+{start}–{end} van {total}	{start}–{end} of {total}	{start}–{end} von {total}	{start}–{end} sur {total}
+{page} van {total}	{page} of {total}	{page} von {total}	{page} sur {total}

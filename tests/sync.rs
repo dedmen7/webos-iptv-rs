@@ -1,4 +1,7 @@
-use webos_iptv_rs::sync::{AudioSample, Cue, align};
+use webos_iptv_rs::{
+    subtitles::retime,
+    sync::{AudioSample, Cue, Timing, TimingPoint, align, fit_rate, measure_point},
+};
 
 const LINES: [(f64, f64); 19] = [
     (3.5, 5.1),
@@ -87,4 +90,88 @@ fn repeated_rhythm_is_ambiguous() {
         })
         .collect();
     assert!(align(&patterned, &samples, 0.).is_none());
+}
+
+#[test]
+fn corrects_subtitles_that_get_progressively_earlier() {
+    let expected = Timing {
+        offset: 0.5,
+        rate: 1.04,
+    };
+    let points = [100., 200., 300.].map(|subtitle| TimingPoint {
+        subtitle,
+        video: expected.video_time(subtitle),
+    });
+    let timing = fit_rate(points, Timing::default()).unwrap();
+    let track = retime(
+        "1\n00:00:01,000 --> 00:00:02,000\nEarly\n\n2\n00:50:00,000 --> 00:50:02,000\nLate\n",
+        timing,
+    )
+    .unwrap();
+    assert!(track.contains("00:00:01.540 --> 00:00:02.580"), "{track}");
+    assert!(track.contains("00:52:00.500 --> 00:52:02.580"), "{track}");
+}
+
+#[test]
+fn measures_drift_for_a_24_to_25_frame_rate_mismatch_from_audio() {
+    let current = Timing::default();
+    let mut start = 0.;
+    let mut random = 1977_u32;
+    let mut sample = || {
+        random = random.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        f64::from(random) / f64::from(u32::MAX)
+    };
+    let cues: Vec<_> = (0..170)
+        .map(|_| {
+            start += 2.4 + sample() * 2.;
+            Cue {
+                start,
+                end: start + 0.65 + sample() * 1.5,
+            }
+        })
+        .collect();
+    for rate in [25. / 24., 24. / 25.] {
+        let actual = Timing { rate, offset: 0.5 };
+        let points = [1200, 2200, 3200].map(|first| {
+            let samples: Vec<_> = (first..first + 640)
+                .map(|tick| {
+                    let time = f64::from(tick) / 10.;
+                    let dialogue = cues.iter().any(|cue| {
+                        (actual.video_time(cue.start)..actual.video_time(cue.end)).contains(&time)
+                    });
+                    let noise = (f64::from(tick) * 2.375).sin().abs() * 0.015;
+                    AudioSample {
+                        time,
+                        energy: noise + if dialogue { 0.12 } else { 0.003 },
+                    }
+                })
+                .collect();
+            let measurement = align(&cues, &samples, current.offset);
+            measure_point(&cues, &samples, current, measurement).unwrap()
+        });
+        let estimated = fit_rate(points, current).unwrap_or_else(|| panic!("{rate}: {points:?}"));
+        for at in [120., 420.] {
+            assert!(
+                (estimated.video_time(at) - actual.video_time(at)).abs() < 0.35,
+                "{estimated:?} at {at} s"
+            );
+        }
+    }
+}
+
+#[test]
+fn rejects_a_single_cut_or_nearby_measurements_as_a_rate_change() {
+    let cut = [(100., 100.), (200., 204.), (300., 304.)];
+    let nearby = [(100., 104.), (130., 135.2), (160., 166.4)];
+    for samples in [cut, nearby] {
+        let points = samples.map(|(subtitle, video)| TimingPoint { subtitle, video });
+        assert!(fit_rate(points, Timing::default()).is_none());
+    }
+}
+
+#[test]
+fn saved_shifts_from_older_versions_play_at_normal_subtitle_speed() {
+    let timing: Timing = serde_json::from_str(r#"{"offset":1.5,"auto":false}"#).unwrap();
+    assert_eq!(timing.video_time(500.), 501.5);
+    assert_eq!(timing.subtitle_time(501.5), 500.);
 }

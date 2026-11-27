@@ -1,36 +1,45 @@
 use crate::catalog::{Item, Kind, Language, field, fold, language, subtitle_title};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::cmp::Reverse;
 use std::collections::HashSet;
 use url::Url;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Download {
     OpenSubtitles(String),
     SubDl(Url),
     Sidecar(Url),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Subtitle {
     pub name: String,
     pub language: Language,
     pub cc: bool,
     pub download: Download,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub downloads: Option<u64>,
 }
 
 impl Subtitle {
     pub fn label(&self) -> String {
+        self.label_with(|text| text)
+    }
+
+    pub fn label_with(&self, translate: impl Fn(&'static str) -> &'static str) -> String {
         format!(
             "{}{} · {} · {}",
             match self.language {
-                Language::Dutch => "Nederlands",
-                _ => "English",
+                Language::Dutch => translate("Nederlands"),
+                _ => translate("English"),
             },
             if self.cc { " CC" } else { "" },
             match self.download {
                 Download::OpenSubtitles(_) => "OpenSubtitles",
                 Download::SubDl(_) => "SubDL",
-                Download::Sidecar(_) => "Aanbieder",
+                Download::Sidecar(_) => translate("Aanbieder"),
             },
             self.name
         )
@@ -98,7 +107,7 @@ pub fn search_url(item: &Item, subdl_key: Option<&str>, manual: &str) -> Url {
     url
 }
 
-pub fn read_opensubtitles(body: &Value) -> Vec<Subtitle> {
+pub fn read_opensubtitles(body: &Value, item: &Item) -> Vec<Subtitle> {
     body["data"]
         .as_array()
         .into_iter()
@@ -109,20 +118,33 @@ pub fn read_opensubtitles(body: &Value) -> Vec<Subtitle> {
             if !matches!(language, Language::Dutch | Language::English) {
                 return None;
             }
+            let feature = &attributes["feature_details"];
+            if item.kind == Kind::Episode
+                && [
+                    ("season_number", item.season),
+                    ("episode_number", item.episode),
+                ]
+                .into_iter()
+                .any(|(key, expected)| {
+                    expected > 0
+                        && field(feature, key)
+                            .parse::<u32>()
+                            .is_ok_and(|number| number != expected)
+                })
+            {
+                return None;
+            }
             let file = attributes["files"].as_array()?.first()?;
             let id = field(file, "file_id");
             if id.is_empty() {
                 return None;
             }
-            let mut name = field(attributes, "release");
-            if name.is_empty() {
-                name = field(file, "file_name");
-            }
             Some(Subtitle {
-                name,
+                name: release_name(field(attributes, "release"), field(file, "file_name")),
                 language,
                 cc: attributes["hearing_impaired"].as_bool().unwrap_or(false),
                 download: Download::OpenSubtitles(id),
+                downloads: field(attributes, "download_count").parse().ok(),
             })
         })
         .collect()
@@ -160,34 +182,35 @@ pub fn read_subdl(body: &Value, item: &Item) -> Vec<Subtitle> {
                     if !suffix.starts_with("/subtitle/") || url.host_str() != Some("dl.subdl.com") {
                         return None;
                     }
-                    let mut name = field(file, "release_name");
-                    if name.is_empty() {
-                        name = field(file, "name");
-                    }
                     Some(Subtitle {
-                        name,
+                        name: release_name(field(file, "release_name"), field(file, "name")),
                         language,
                         cc: file["hi"].as_bool().unwrap_or(false),
                         download: Download::SubDl(url),
+                        downloads: None,
                     })
                 })
         })
         .collect()
 }
 
-pub fn needs_fallback(results: &[Subtitle]) -> bool {
+pub fn needs_fallback(item: &Item, results: &[Subtitle]) -> bool {
+    let stream_release = item_release(item);
     !results.iter().any(|subtitle| {
-        subtitle.language == Language::Dutch
-            || (subtitle.language == Language::English && subtitle.cc)
+        language_priority(subtitle) < 2
+            && release_fit(stream_release, &subtitle.name) != ReleaseFit::Conflict
     })
 }
 
-pub fn rank(results: &mut Vec<Subtitle>) {
-    results.sort_by_key(|subtitle| match (subtitle.language, subtitle.cc) {
-        (Language::Dutch, false) => 0,
-        (Language::Dutch, true) => 1,
-        (Language::English, true) => 2,
-        _ => 3,
+pub fn rank(item: &Item, results: &mut Vec<Subtitle>) {
+    let stream_release = item_release(item);
+    results.sort_by_cached_key(|subtitle| {
+        (
+            release_fit(stream_release, &subtitle.name),
+            language_priority(subtitle),
+            Reverse(subtitle.downloads),
+            subtitle.language == Language::Dutch && subtitle.cc,
+        )
     });
     let mut seen = HashSet::new();
     results.retain(|entry| {
@@ -199,6 +222,95 @@ pub fn rank(results: &mut Vec<Subtitle>) {
         seen.insert((entry.language, entry.cc, release))
     });
     results.truncate(60);
+}
+
+fn language_priority(subtitle: &Subtitle) -> u8 {
+    match (subtitle.language, subtitle.cc) {
+        (Language::Dutch, _) => 0,
+        (Language::English, true) => 1,
+        _ => 2,
+    }
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+struct Release {
+    source: Option<&'static str>,
+    edition: Option<&'static str>,
+}
+
+fn release_name(name: String, filename: String) -> String {
+    if name.is_empty()
+        || (release(&name) == Release::default() && release(&filename) != Release::default())
+    {
+        filename
+    } else {
+        name
+    }
+}
+
+fn release(name: &str) -> Release {
+    let normalized = format!(" {} ", fold(name));
+    let matches = |tokens: &[&str]| tokens.iter().any(|token| normalized.contains(token));
+    let source = [
+        ("web-dl", &[" web dl ", " webdl "][..]),
+        ("web-rip", &[" web rip ", " webrip "][..]),
+        (
+            "blu-ray",
+            &[" blu ray ", " bluray ", " bdrip ", " brrip "][..],
+        ),
+        ("dvd", &[" dvd rip ", " dvdrip ", " dvd "][..]),
+        ("broadcast", &[" hdtv ", " pdtv "][..]),
+    ]
+    .into_iter()
+    .find_map(|(value, tokens)| matches(tokens).then_some(value));
+    let edition = [
+        ("director", &[" director s cut ", " directors cut "][..]),
+        ("extended", &[" extended "][..]),
+        ("theatrical", &[" theatrical "][..]),
+        ("unrated", &[" unrated "][..]),
+    ]
+    .into_iter()
+    .find_map(|(value, tokens)| matches(tokens).then_some(value));
+    Release { source, edition }
+}
+
+fn item_release(item: &Item) -> Release {
+    let title = release(&item.title);
+    let filename = Url::parse(&item.stream)
+        .ok()
+        .and_then(|url| url.path_segments()?.next_back().map(release))
+        .unwrap_or_default();
+    Release {
+        source: filename.source.or(title.source),
+        edition: filename.edition.or(title.edition),
+    }
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum ReleaseFit {
+    Match(Reverse<usize>),
+    Unknown,
+    Conflict,
+}
+
+fn release_fit(expected: Release, name: &str) -> ReleaseFit {
+    let candidate = release(name);
+    let hints = [
+        expected.source.zip(candidate.source),
+        expected.edition.zip(candidate.edition),
+    ];
+    let known = hints.iter().flatten().count();
+    if hints
+        .iter()
+        .flatten()
+        .any(|(expected, found)| expected != found)
+    {
+        ReleaseFit::Conflict
+    } else if known > 0 {
+        ReleaseFit::Match(Reverse(known))
+    } else {
+        ReleaseFit::Unknown
+    }
 }
 
 fn cues_and_text(input: &str) -> Vec<(crate::sync::Cue, String)> {
@@ -237,12 +349,38 @@ pub fn sync_cues(input: &str) -> Vec<crate::sync::Cue> {
         .collect()
 }
 
+pub fn fits_duration(input: &str, duration: f64) -> bool {
+    let cues = sync_cues(input);
+    if cues.is_empty() {
+        return false;
+    }
+    if !duration.is_finite() || duration <= 0. {
+        return true;
+    }
+    let tolerance = (duration * 0.02).clamp(6., 15.);
+    let outside = cues
+        .iter()
+        .filter(|cue| cue.end > duration + tolerance)
+        .count();
+    cues[0].start < duration && outside <= (cues.len() / 20).max(1)
+}
+
 pub fn webvtt(input: &str, offset: f64) -> Option<String> {
+    retime(
+        input,
+        crate::sync::Timing {
+            offset,
+            ..Default::default()
+        },
+    )
+}
+
+pub fn retime(input: &str, timing: crate::sync::Timing) -> Option<String> {
     let mut output = String::from("WEBVTT\n\n");
     let mut count = 0;
     for (cue, text) in cues_and_text(input) {
-        let start = cue.start + offset;
-        let end = cue.end + offset;
+        let start = timing.video_time(cue.start);
+        let end = timing.video_time(cue.end);
         if end <= 0. {
             continue;
         }

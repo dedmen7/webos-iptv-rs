@@ -6,6 +6,12 @@ use serde::{Deserialize, Serialize};
 pub struct Programme {
     #[serde(rename = "@channel")]
     pub channel: String,
+    #[serde(
+        rename = "@catchup-id",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub catchup_id: String,
     #[serde(rename = "@start")]
     pub start: String,
     #[serde(rename = "@stop", default)]
@@ -14,9 +20,9 @@ pub struct Programme {
     pub title: Vec<String>,
     #[serde(rename = "desc", default)]
     pub description: Vec<String>,
-    #[serde(skip)]
+    #[serde(default)]
     pub start_unix: i64,
-    #[serde(skip)]
+    #[serde(default)]
     pub stop_unix: i64,
 }
 
@@ -63,4 +69,29 @@ pub fn unix_time(time: &str) -> Option<i64> {
     }
     let time = NaiveDateTime::parse_from_str(time, "%Y%m%d%H%M%S").ok()?;
     Some(Utc.from_utc_datetime(&time).timestamp())
+}
+
+pub fn now_and_next(
+    programmes: &[Programme],
+    now: i64,
+) -> (Option<&Programme>, Option<&Programme>) {
+    let boundary = programmes.partition_point(|programme| programme.start_unix <= now);
+    let current = programmes[..boundary]
+        .iter()
+        .rev()
+        .find(|programme| programme.stop_unix > now);
+    (current, programmes.get(boundary))
+}
+
+pub fn overlap(programme: &Programme, window: std::ops::Range<i64>) -> Option<(f64, f64)> {
+    let start = programme.start_unix.max(window.start);
+    let end = programme.stop_unix.min(window.end);
+    if end <= start {
+        return None;
+    }
+    let duration = (window.end - window.start) as f64;
+    Some((
+        (start - window.start) as f64 / duration,
+        (end - start) as f64 / duration,
+    ))
 }

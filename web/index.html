@@ -9,20 +9,38 @@
   <script defer src="player.js"></script>
 </head>
 <body>
-  <p id="initial" role="status">Orbis IPTV starten…</p>
+  <div id="initial">
+    <span class="startup-progress" aria-hidden="true"></span>
+    <p id="initial-message" role="status" data-i18n="Orbis IPTV starten…">Orbis IPTV starten…</p>
+  </div>
+  <script>
+    if (typeof WebAssembly === "undefined") {
+      var system = window.webOSSystem || window.PalmSystem || {};
+      var locale = (system.locale || navigator.language || "en").split(/[-_]/)[0].toLowerCase();
+      var messages = {
+        nl: "Orbis IPTV vereist webOS 5.0 of hoger.",
+        de: "Orbis IPTV benötigt webOS 5.0 oder neuer.",
+        fr: "Orbis IPTV nécessite webOS 5.0 ou une version ultérieure.",
+        en: "Orbis IPTV requires webOS 5.0 or later."
+      };
+      document.getElementById("initial").setAttribute("data-error", "");
+      document.getElementById("initial-message").textContent = messages[locale] || messages.en;
+    }
+  </script>
   <div id="app">
     <header class="topbar">
-      <div class="brand"><span aria-hidden="true" class="brand-dot"></span>Orbis IPTV</div>
-      <nav id="navigation" aria-label="Hoofdnavigatie">
-        <button data-cmd="view" data-value="live">Live</button>
-        <button data-cmd="view" data-value="guide">Gids</button>
-        <button data-cmd="view" data-value="movies">Films</button>
-        <button data-cmd="view" data-value="series">Series</button>
-        <button data-cmd="view" data-value="library">Mijn lijst</button>
-        <button data-cmd="view" data-value="settings">Instellingen</button>
+      <div class="brand"><img src="brand-mark.png" class="brand-icon" alt="" width="28" height="28">Orbis IPTV</div>
+      <nav id="navigation" aria-label="Hoofdnavigatie" data-i18n-aria="Hoofdnavigatie">
+        <button data-cmd="view" data-value="live" data-i18n="Live">Live</button>
+        <button data-cmd="view" data-value="radio" data-i18n="Radio">Radio</button>
+        <button data-cmd="view" data-value="movies" data-i18n="Films">Films</button>
+        <button data-cmd="view" data-value="series" data-i18n="Series">Series</button>
+        <button data-cmd="view" data-value="library" data-i18n="Mijn lijst">Mijn lijst</button>
+        <button data-cmd="view" data-value="settings" data-i18n="Instellingen">Instellingen</button>
       </nav>
       <div class="header-actions">
-        <input id="search" type="search" placeholder="Zoeken" aria-label="Zoeken in de huidige sectie" autocomplete="off" spellcheck="false">
+        <button id="search-keys" data-cmd="search-keys" aria-label="Schermtoetsenbord" data-i18n-aria="Schermtoetsenbord" aria-controls="search-keyboard" aria-expanded="false">ABC</button>
+        <input id="search" type="text" role="searchbox" enterkeyhint="search" placeholder="Zoeken" data-i18n-placeholder="Zoeken" aria-label="Zoeken in de huidige sectie" data-i18n-aria="Zoeken in de huidige sectie" autocomplete="off" spellcheck="false">
         <button id="preferred" data-cmd="preferred" aria-pressed="false">NL + EN</button>
       </div>
     </header>
@@ -30,33 +48,88 @@
       <p class="notice" id="notice" role="status"></p>
       <section id="content"></section>
     </main>
+    <section id="catalog-picker" role="dialog" aria-modal="true" aria-labelledby="catalog-picker-title" hidden>
+      <div class="catalog-picker-panel">
+        <header class="subtitle-header">
+          <h2 id="catalog-picker-title"></h2>
+          <button id="catalog-picker-close" data-cmd="picker-close" data-i18n="Terug">Terug</button>
+        </header>
+        <div id="catalog-picker-options"></div>
+      </div>
+    </section>
+    <section id="search-keyboard" role="dialog" aria-modal="true" aria-labelledby="search-keyboard-title" hidden>
+      <div class="search-keyboard-panel">
+        <h2 id="search-keyboard-title" data-i18n="Zoeken">Zoeken</h2>
+        <p id="search-keyboard-query" aria-live="polite"></p>
+        <div id="search-keyboard-keys"></div>
+      </div>
+    </section>
   </div>
-  <section id="player" aria-label="Videospeler" hidden>
+  <section id="player" aria-label="Videospeler" data-i18n-aria="Videospeler" tabindex="-1" hidden>
     <video id="video" preload="metadata" playsinline></video>
+    <div class="radio-visual" aria-hidden="true">
+      <div class="radio-logo-across">
+        <div class="radio-logo-down">
+          <img class="radio-logo" src="brand-mark.png" alt="" width="132" height="132">
+        </div>
+      </div>
+    </div>
     <div class="player-top">
       <h1 id="player-title"></h1>
       <p id="player-notice" role="status"></p>
     </div>
-    <div class="player-actions" id="player-actions">
-      <button data-cmd="stop">Terug</button>
-      <button data-cmd="rewind">−10 s</button>
-      <button class="primary" id="player-play" data-cmd="pause">Afspelen / pauze</button>
-      <button data-cmd="forward">+30 s</button>
-      <button id="player-subs" data-cmd="subs">Ondertitels</button>
-      <button id="player-save" data-cmd="save-live">Favoriet</button>
+    <div id="stream-loading" role="status" hidden>
+      <strong id="stream-loading-title"></strong>
+      <span id="stream-loading-message"></span>
+      <div class="startup-progress stream-progress" aria-hidden="true"></div>
     </div>
+    <div id="live-now" class="live-now" aria-label="Nu en straks" data-i18n-aria="Nu en straks" hidden></div>
+    <div class="player-actions" id="player-actions">
+      <div id="player-timeline" class="player-timeline vod-action" hidden>
+        <span id="player-elapsed">0:00</span>
+        <input id="player-seek" type="range" min="0" max="0" step="any" aria-label="Tijdsbalk" data-i18n-aria="Tijdsbalk">
+        <span id="player-duration">0:00</span>
+      </div>
+      <button data-cmd="stop" data-i18n="Terug">Terug</button>
+      <div class="player-transport">
+        <button class="vod-action" id="player-rewind" data-cmd="rewind">−10 s</button>
+        <button class="primary vod-action" id="player-play" data-cmd="pause" data-i18n="Afspelen / pauze">Afspelen / pauze</button>
+        <button class="vod-action" id="player-forward" data-cmd="forward">+30 s</button>
+      </div>
+      <button id="player-subs" data-cmd="subs" data-i18n="Ondertitels">Ondertitels</button>
+      <button id="quick-guide-button" class="primary" data-cmd="live-guide-quick" hidden data-i18n="Snelle gids">Snelle gids</button>
+    </div>
+    <section id="live-guide-modal" class="live-guide-modal" aria-labelledby="live-guide-heading" hidden>
+      <header class="live-guide-header">
+        <h2 id="live-guide-heading" data-i18n="Snelle gids">Snelle gids</h2>
+        <div class="actions">
+          <input id="live-guide-search" type="search" aria-label="Programma zoeken" data-i18n-aria="Programma zoeken" placeholder="Programma zoeken" data-i18n-placeholder="Programma zoeken" autocomplete="off" hidden>
+          <button id="last-channel" data-cmd="previous-live" hidden data-i18n="Laatst bekeken">Laatst bekeken</button>
+          <button id="live-guide-switch" data-cmd="live-guide-full" data-i18n="Hele gids">Hele gids</button>
+          <button id="live-guide-close" data-cmd="live-guide-close" data-i18n="Terug">Terug</button>
+        </div>
+      </header>
+      <div id="live-guide-content"></div>
+    </section>
     <section id="subtitle-panel" class="subtitle-panel" aria-labelledby="subtitle-heading" hidden>
       <div class="subtitle-header">
-        <h2 id="subtitle-heading">Ondertitels</h2>
-        <button id="subtitle-close" data-cmd="subs-close">Terug</button>
+        <h2 id="subtitle-heading" data-i18n="Ondertitels">Ondertitels</h2>
+        <button id="subtitle-close" data-cmd="subs-close" data-i18n="Terug">Terug</button>
       </div>
       <div id="subtitle-tracks" class="track-list"></div>
       <div id="subtitle-online" class="subtitle-online">
-        <label for="subtitle-query">Online zoeken</label>
+        <label id="subtitle-online-label" for="subtitle-query" data-i18n="Online zoeken">Online zoeken</label>
         <div class="subtitle-tools">
           <input id="subtitle-query" type="search" autocomplete="off" spellcheck="false">
-          <button class="primary" id="subtitle-search-button" data-cmd="subs-search">Zoeken</button>
+          <button class="primary" id="subtitle-best-button" data-cmd="subs-best" data-i18n="Beste match">Beste match</button>
+          <button id="subtitle-search-button" data-cmd="subs-search" data-i18n="Zoeken">Zoeken</button>
         </div>
+      </div>
+      <div id="subtitle-size" class="subtitle-size" role="group" aria-label="Tekstgrootte" data-i18n-aria="Tekstgrootte">
+        <span aria-hidden="true">Aa</span>
+        <button data-cmd="subtitle-size" data-value="100" aria-pressed="false">100%</button>
+        <button data-cmd="subtitle-size" data-value="120" aria-pressed="true">120%</button>
+        <button data-cmd="subtitle-size" data-value="150" aria-pressed="false">150%</button>
       </div>
       <p id="subtitle-notice" class="notice" role="status"></p>
       <div id="subtitle-results" class="subtitle-results"></div>

@@ -1,19 +1,67 @@
 use super::io;
+use futures::{
+    FutureExt,
+    channel::oneshot,
+    future::{Either, LocalBoxFuture, Shared, select},
+};
 use js_sys::Array;
-use std::cell::RefCell;
+use std::{
+    cell::RefCell,
+    collections::{HashMap, VecDeque},
+};
 use wasm_bindgen::{JsCast, closure::Closure};
-use wasm_bindgen_futures::{JsFuture, spawn_local};
+use wasm_bindgen_futures::spawn_local;
 use web_sys::{
     Blob, Element, Event, HtmlImageElement, IntersectionObserver, IntersectionObserverEntry,
-    IntersectionObserverInit, Response,
+    IntersectionObserverInit,
 };
 
 thread_local! {
     static OBSERVER: RefCell<Option<IntersectionObserver>> = const { RefCell::new(None) };
+    static LOADING: RefCell<HashMap<String, PosterLoad>> = RefCell::new(HashMap::new());
+    static RECENT: RefCell<RecentPosters> = RefCell::new(RecentPosters::default());
 }
 
-pub fn mount(image: &Element, url: &str) {
-    let _ = image.set_attribute("data-poster", url);
+type PosterLoad = Shared<LocalBoxFuture<'static, Option<Blob>>>;
+
+#[derive(Default)]
+struct RecentPosters {
+    images: VecDeque<(String, Blob)>,
+    bytes: f64,
+}
+
+impl RecentPosters {
+    fn get(&mut self, key: &str) -> Option<Blob> {
+        let index = self.images.iter().position(|(url, _)| url == key)?;
+        let (key, image) = self.images.remove(index)?;
+        self.images.push_back((key, image.clone()));
+        Some(image)
+    }
+
+    fn insert(&mut self, key: String, image: Blob) {
+        const MAX_MEMORY_BYTES: f64 = 6. * 1024. * 1024.;
+        const MAX_IMAGES: usize = 32;
+        let size = image.size();
+        if size > MAX_MEMORY_BYTES {
+            return;
+        }
+        while self.images.len() >= MAX_IMAGES || self.bytes + size > MAX_MEMORY_BYTES {
+            if let Some((_, evicted)) = self.images.pop_front() {
+                self.bytes -= evicted.size();
+            } else {
+                break;
+            }
+        }
+        self.bytes += size;
+        self.images.push_back((key, image));
+    }
+}
+
+pub fn mount(image: &Element, url: &url::Url, fallback: Option<&url::Url>) {
+    let _ = image.set_attribute("data-poster", url.as_str());
+    if let Some(fallback) = fallback {
+        let _ = image.set_attribute("data-poster-fallback", fallback.as_str());
+    }
     let observed = OBSERVER.with(|observer| {
         let mut observer = observer.borrow_mut();
         if observer.is_none() {
@@ -24,8 +72,8 @@ pub fn mount(image: &Element, url: &str) {
             .map(|observer| observer.observe(image))
             .is_some()
     });
-    if !observed {
-        let _ = image.set_attribute("src", url);
+    if !observed && let Some(image) = image.dyn_ref::<HtmlImageElement>() {
+        spawn_local(load(image.clone(), url.as_str().to_owned(), false));
     }
 }
 
@@ -56,7 +104,7 @@ fn make_observer() -> Option<IntersectionObserver> {
                 let Ok(entry) = entry.dyn_into::<IntersectionObserverEntry>() else {
                     continue;
                 };
-                if !entry.is_intersecting() {
+                if !entry.is_intersecting() && entry.intersection_ratio() <= 0. {
                     continue;
                 }
                 let target = entry.target();
@@ -67,7 +115,7 @@ fn make_observer() -> Option<IntersectionObserver> {
                 let Ok(image) = target.dyn_into::<HtmlImageElement>() else {
                     continue;
                 };
-                spawn_local(load(image, url));
+                spawn_local(load(image, url, true));
             }
         },
     );
@@ -79,65 +127,99 @@ fn make_observer() -> Option<IntersectionObserver> {
     Some(observer)
 }
 
-async fn load(image: HtmlImageElement, url: String) {
-    let blob = if let Some(blob) = io::poster(&url).await {
-        Some(blob)
-    } else if image.is_connected() {
-        let blob = fetch(&url).await;
-        if let Some(blob) = &blob {
-            let key = url.clone();
-            let blob = blob.clone();
-            spawn_local(async move {
-                io::store_poster(&key, &blob).await;
-            });
-        }
-        blob
-    } else {
-        None
-    };
-    if !image.is_connected() {
+async fn load(image: HtmlImageElement, url: String, cache: bool) {
+    let fallback = image.get_attribute("data-poster-fallback");
+    if load_candidate(&image, &url, cache, fallback.is_none()).await {
         return;
     }
-    let object_url = blob.and_then(|blob| web_sys::Url::create_object_url_with_blob(&blob).ok());
-    if let Some(object_url) = object_url {
-        let clean_up = object_url.clone();
-        let cleanup_image = image.clone();
-        let release = Closure::once_into_js(move |_event: Event| {
-            cleanup_image.set_onload(None);
-            cleanup_image.set_onerror(None);
-            let _ = web_sys::Url::revoke_object_url(&clean_up);
-        });
-        image.set_onload(Some(release.unchecked_ref()));
-        image.set_onerror(Some(release.unchecked_ref()));
-        image.set_src(&object_url);
-    } else {
-        image.set_src(&url);
+    if let Some(fallback) = fallback
+        && load_candidate(&image, &fallback, cache, true).await
+    {
+        return;
     }
+    image.set_hidden(true);
 }
 
-async fn fetch(url: &str) -> Option<Blob> {
-    let window = web_sys::window()?;
-    let response: Response = JsFuture::from(window.fetch_with_str(url))
-        .await
-        .ok()?
-        .dyn_into()
-        .ok()?;
-    if !response.ok() {
-        return None;
+async fn load_candidate(
+    image: &HtmlImageElement,
+    url: &str,
+    cache: bool,
+    retry_direct: bool,
+) -> bool {
+    if !image.is_connected() {
+        return false;
     }
-    let size = response
-        .headers()
-        .get("content-length")
-        .ok()
-        .flatten()
-        .and_then(|value| value.parse::<u32>().ok());
-    if size.is_some_and(|size| size > 768_000) {
-        return None;
+    if cache
+        && let Some(blob) = resolve(url).await
+        && let Ok(object_url) = web_sys::Url::create_object_url_with_blob(&blob)
+    {
+        let loaded = display(image, &object_url).await;
+        let _ = web_sys::Url::revoke_object_url(&object_url);
+        if loaded || !retry_direct {
+            return loaded;
+        }
     }
-    let blob: Blob = JsFuture::from(response.blob().ok()?)
-        .await
-        .ok()?
-        .dyn_into()
-        .ok()?;
-    (blob.size() <= 768_000. && blob.type_().starts_with("image/")).then_some(blob)
+    display(image, url).await
+}
+
+async fn display(image: &HtmlImageElement, src: &str) -> bool {
+    if !image.is_connected() {
+        return false;
+    }
+    let (sender, receiver) = oneshot::channel();
+    let mut sender = Some(sender);
+    let settled = Closure::<dyn FnMut(Event)>::new(move |event: Event| {
+        if let Some(sender) = sender.take() {
+            let _ = sender.send(event.type_() == "load");
+        }
+    });
+    image.set_onload(Some(settled.as_ref().unchecked_ref()));
+    image.set_onerror(Some(settled.as_ref().unchecked_ref()));
+    image.set_src(src);
+    let result = select(receiver, Box::pin(io::delay(5_000))).await;
+    image.set_onload(None);
+    image.set_onerror(None);
+    let loaded = matches!(result, Either::Left((Ok(true), _)));
+    if !loaded {
+        let _ = image.remove_attribute("src");
+    }
+    loaded
+}
+
+async fn resolve(url: &str) -> Option<Blob> {
+    if let Some(blob) = RECENT.with(|recent| recent.borrow_mut().get(url)) {
+        return Some(blob);
+    }
+    let loading = LOADING.with(|loading| {
+        let mut loading = loading.borrow_mut();
+        if let Some(existing) = loading.get(url) {
+            return existing.clone();
+        }
+        let url = url.to_owned();
+        let lookup = url.clone();
+        let future = async move {
+            let blob = if let Some(saved) = io::poster(&lookup).await {
+                Some(saved)
+            } else {
+                let fetched = io::image_blob(&lookup).await;
+                if let Some(image) = fetched.clone() {
+                    let key = lookup.clone();
+                    spawn_local(async move {
+                        io::store_poster(&key, &image).await;
+                    });
+                }
+                fetched
+            };
+            if let Some(image) = blob.clone() {
+                RECENT.with(|recent| recent.borrow_mut().insert(lookup.clone(), image));
+            }
+            LOADING.with(|loading| loading.borrow_mut().remove(&lookup));
+            blob
+        }
+        .boxed_local()
+        .shared();
+        loading.insert(url, future.clone());
+        future
+    });
+    loading.await
 }
