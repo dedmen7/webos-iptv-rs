@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::sync::Mutex;
 use unicode_normalization::{UnicodeNormalization, char::is_combining_mark};
 use url::Url;
 
@@ -21,7 +22,7 @@ impl Kind {
     }
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Item {
     pub id: String,
@@ -147,14 +148,14 @@ impl Genre {
     }
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Sidecar {
     pub name: String,
     pub lang: String,
     pub url: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub enum Archive {
     Xtream {
         days: u32,
@@ -841,10 +842,16 @@ fn language_tag(title: &str) -> Language {
 }
 
 pub fn preferred_content(item: &Item) -> bool {
-    match language_tag(&item.title) {
+    title_preferred(&item.title, || {
+        language_tag(&item.category) != Language::Other
+    })
+}
+
+fn title_preferred(title: &str, category_preferred: impl FnOnce() -> bool) -> bool {
+    match language_tag(title) {
         Language::Dutch | Language::English => true,
         Language::Other => false,
-        Language::Unspecified => language_tag(&item.category) != Language::Other,
+        Language::Unspecified => category_preferred(),
     }
 }
 
@@ -874,10 +881,27 @@ pub fn subtitle_title(title: &str) -> String {
     without_tag.trim().to_owned()
 }
 
+// One shortlist per catalog, bounded to 16 KiB of indices on a TV.
+const SEARCH_SHORTLIST_LIMIT: usize = 4096;
+
+struct SearchCandidates {
+    query: String,
+    preferred: bool,
+    indices: Vec<usize>,
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+#[derive(Default)]
+struct LiveFeedIndex {
+    first: HashMap<Box<str>, usize>,
+    duplicates: HashMap<usize, Vec<usize>>,
+}
+
 #[derive(Default)]
 pub struct Catalog {
     pub items: Vec<Item>,
     normalized: Vec<String>,
+    last_search: Mutex<Option<SearchCandidates>>,
     preferred: Vec<bool>,
     preferred_count: usize,
     categories: Vec<String>,
@@ -888,6 +912,10 @@ pub struct Catalog {
     preferred_tagged_count: usize,
     preview_order: Vec<usize>,
     live_order: Option<Vec<usize>>,
+    #[cfg(any(target_arch = "wasm32", test))]
+    live_feed_index: std::sync::OnceLock<LiveFeedIndex>,
+    #[cfg(any(target_arch = "wasm32", test))]
+    preview_feed_routes: Vec<Item>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -964,22 +992,35 @@ impl Catalog {
     }
 
     pub(crate) fn append(&mut self, mut batch: Vec<Item>) {
+        #[cfg(any(target_arch = "wasm32", test))]
+        {
+            self.live_feed_index.take();
+        }
+        self.last_search = Mutex::default();
         self.normalized.reserve(batch.len());
         self.preferred.reserve(batch.len());
-        let mut categories = BTreeSet::new();
-        let mut preferred_categories = BTreeSet::new();
-        let mut group_genres = HashMap::new();
+        struct Group {
+            preferred_language: bool,
+            has_preferred: bool,
+            genre: Option<Genre>,
+        }
+        let mut groups = HashMap::new();
         for item in &mut batch {
             self.normalized.push(fold(&item.title));
-            let preferred = preferred_content(item);
+            let group = groups
+                .entry(item.category.as_str())
+                .or_insert_with(|| Group {
+                    preferred_language: language_tag(&item.category) != Language::Other,
+                    genre: Genre::from_group(&item.category),
+                    has_preferred: false,
+                });
+            let preferred = title_preferred(&item.title, || group.preferred_language);
+            group.has_preferred |= preferred;
             self.preferred.push(preferred);
             self.preferred_count += usize::from(preferred);
             if matches!(item.kind, Kind::Movie | Kind::Series) {
                 if item.genres.is_empty()
-                    && !item.category.is_empty()
-                    && let Some(genre) = *group_genres
-                        .entry(item.category.as_str())
-                        .or_insert_with(|| Genre::from_group(&item.category))
+                    && let Some(genre) = group.genre
                 {
                     item.genres.push(genre);
                 }
@@ -991,23 +1032,22 @@ impl Catalog {
                     self.preferred_genres.extend(item.genres.iter().copied());
                 }
             }
-            if item.category.is_empty() {
+        }
+        let mut groups: Vec<_> = groups.into_iter().collect();
+        groups.sort_unstable_by_key(|(category, _)| *category);
+        for (category, group) in groups {
+            if category.is_empty() {
                 continue;
             }
-            categories.insert(item.category.as_str());
-            if preferred {
-                preferred_categories.insert(item.category.as_str());
-            }
-        }
-        for (available, discovered) in [
-            (&mut self.categories, categories),
-            (&mut self.preferred_categories, preferred_categories),
-        ] {
-            for category in discovered {
+            let insert = |available: &mut Vec<String>| {
                 if let Err(index) = available.binary_search_by(|known| known.as_str().cmp(category))
                 {
                     available.insert(index, category.to_owned());
                 }
+            };
+            insert(&mut self.categories);
+            if group.has_preferred {
+                insert(&mut self.preferred_categories);
             }
         }
         if self.items.is_empty() {
@@ -1101,6 +1141,19 @@ impl Catalog {
                 .collect();
             return (hits, count);
         }
+        if query.is_empty() && !filter.is_all() {
+            let mut hits = Vec::new();
+            let mut count = 0;
+            for index in self.indices().filter(|&index| {
+                (!preferred || self.preferred[index]) && filter.matches(&self.items[index])
+            }) {
+                count += 1;
+                if hits.len() < limit {
+                    hits.push(index);
+                }
+            }
+            return (hits, count);
+        }
         let (buckets, count) = self.search_buckets(&query, filter, preferred, limit);
         (buckets.into_iter().flatten().take(limit).collect(), count)
     }
@@ -1153,28 +1206,46 @@ impl Catalog {
         } else {
             &[]
         };
-        for index in self.indices() {
+        let mut cache = (!query.is_empty() && filter.is_all())
+            .then(|| self.last_search.try_lock().ok())
+            .flatten();
+        let previous = cache
+            .as_deref()
+            .and_then(Option::as_ref)
+            .filter(|previous| {
+                preferred == previous.preferred && query.starts_with(&previous.query)
+            });
+
+        let mut candidates = Vec::new();
+        let visit = |index: usize| {
             let item = &self.items[index];
             let title = &self.normalized[index];
-            if !filter.matches(item)
-                || (preferred && !self.preferred[index])
-                || !tokens.iter().all(|token| title.contains(token))
+            if !filter.matches(item) || (preferred && !self.preferred[index]) {
+                return;
+            }
+            let phrase_matches = query.is_empty() || title.contains(query);
+            if !phrase_matches
+                && (tokens.len() == 1 || !tokens.iter().all(|token| title.contains(token)))
             {
-                continue;
+                return;
+            }
+            // Another row with the same provider ID may be the only match after the next key.
+            if cache.is_some() && candidates.len() < SEARCH_SHORTLIST_LIMIT {
+                candidates.push(index);
             }
             if !query.is_empty()
                 && matches!(item.kind, Kind::Movie | Kind::Series)
                 && !item.id.is_empty()
                 && !searched_ids.insert((item.kind, item.id.as_str()))
             {
-                continue;
+                return;
             }
             count += 1;
             let rank = if query.is_empty() || title == query {
                 0
             } else if title.starts_with(query) {
                 1
-            } else if title.contains(query) {
+            } else if phrase_matches {
                 2
             } else {
                 3
@@ -1183,6 +1254,20 @@ impl Catalog {
             if bucket.len() < limit && !leading.contains(&index) {
                 bucket.push(index);
             }
+        };
+        if let Some(previous) = previous {
+            previous.indices.iter().copied().for_each(visit);
+        } else {
+            self.indices().for_each(visit);
+        }
+        if let Some(cache) = cache.as_deref_mut()
+            && candidates.len() < SEARCH_SHORTLIST_LIMIT
+        {
+            *cache = Some(SearchCandidates {
+                query: query.to_owned(),
+                preferred,
+                indices: candidates,
+            });
         }
         (buckets, count)
     }
@@ -1222,6 +1307,13 @@ impl Catalog {
     }
 
     pub fn apply_live_groups(&mut self, settings: &LiveGroups) {
+        #[cfg(any(target_arch = "wasm32", test))]
+        {
+            self.live_feed_index.take();
+            self.preview_feed_routes
+                .retain(|item| !settings.hidden.contains(&item.category));
+        }
+        self.last_search = Mutex::default();
         if settings.order.is_empty() && settings.hidden.is_empty() {
             self.live_order = None;
             return;
@@ -1242,6 +1334,109 @@ impl Catalog {
                 .unwrap_or(usize::MAX)
         });
         self.live_order = Some(indices);
+    }
+
+    #[cfg(any(target_arch = "wasm32", test))]
+    fn visible_live_feed_index(&self) -> &LiveFeedIndex {
+        self.live_feed_index.get_or_init(|| {
+            let mut index = LiveFeedIndex::default();
+            for position in self
+                .indices()
+                .filter(|&pos| self.items[pos].kind == Kind::Live)
+            {
+                let id = self.items[position].id.as_str();
+                if let Some(&first) = index.first.get(id) {
+                    index.duplicates.entry(first).or_default().push(position);
+                } else {
+                    index.first.insert(id.into(), position);
+                }
+            }
+            index
+        })
+    }
+
+    #[cfg(any(target_arch = "wasm32", test))]
+    pub(crate) fn equivalent_live_feed(&self, logical: &Item, candidate_id: &str) -> Option<&Item> {
+        let epg = logical.epg_id.trim();
+        if logical.kind != Kind::Live
+            || logical.id == candidate_id
+            || ["", "-", "0", "none", "null", "unknown", "n/a"]
+                .iter()
+                .any(|missing| epg.eq_ignore_ascii_case(missing))
+        {
+            return None;
+        }
+        let guide_matches = |item: &Item| item.epg_id.trim().eq_ignore_ascii_case(epg);
+        let candidate = self
+            .preview_feed_routes
+            .iter()
+            .find(|item| item.id == candidate_id && guide_matches(item))
+            .or_else(|| {
+                let visible = self.visible_live_feed_index();
+                let &first = visible.first.get(candidate_id)?;
+                std::iter::once(first)
+                    .chain(
+                        visible
+                            .duplicates
+                            .get(&first)
+                            .into_iter()
+                            .flatten()
+                            .copied(),
+                    )
+                    .map(|pos| &self.items[pos])
+                    .find(|item| guide_matches(item))
+            })?;
+        let name = live_feed_identity(&logical.title)?;
+        (live_feed_identity(&candidate.title)? == name).then_some(candidate)
+    }
+
+    #[cfg(any(target_arch = "wasm32", test))]
+    pub(crate) fn preview_feed_routes(
+        &self,
+        first_items: &[Item],
+        feeds: &crate::live_feeds::Feeds,
+        source: &str,
+        now: i64,
+    ) -> Vec<Item> {
+        if !feeds.has_samples_for_source(source) {
+            return Vec::new();
+        }
+        let mut routes = Vec::new();
+        let mut included = HashSet::new();
+        for logical in first_items {
+            for id in feeds.preview_alternatives(source, &logical.id, &logical.epg_id, now) {
+                if included.contains(id) {
+                    continue;
+                }
+                let Some(donor) = self.equivalent_live_feed(logical, id) else {
+                    continue;
+                };
+                included.insert(id);
+                if first_items.iter().any(|shown| same_feed_row(shown, donor)) {
+                    continue;
+                }
+                routes.push(Item {
+                    id: donor.id.clone(),
+                    kind: Kind::Live,
+                    title: donor.title.clone(),
+                    epg_id: donor.epg_id.clone(),
+                    stream: donor.stream.clone(),
+                    extension: donor.extension.clone(),
+                    category: donor.category.clone(),
+                    ..Item::default()
+                });
+            }
+        }
+        routes
+    }
+
+    #[cfg(any(target_arch = "wasm32", test))]
+    pub(crate) fn set_preview_feed_routes(&mut self, mut routes: Vec<Item>) {
+        routes.truncate(crate::live_routes::CHANNEL_LIMIT);
+        routes.retain(|route| {
+            route.kind == Kind::Live && !self.items.iter().any(|shown| same_feed_row(shown, route))
+        });
+        self.preview_feed_routes = routes;
     }
 
     pub fn live_neighbors(&self, current: &Item, preferred: bool) -> Option<(&Item, &Item)> {
@@ -1314,24 +1509,77 @@ impl Catalog {
     }
 }
 
+#[cfg(any(target_arch = "wasm32", test))]
+fn same_feed_row(shown: &Item, donor: &Item) -> bool {
+    shown.kind == donor.kind
+        && shown.id == donor.id
+        && shown.title == donor.title
+        && shown
+            .epg_id
+            .trim()
+            .eq_ignore_ascii_case(donor.epg_id.trim())
+        && shown.stream == donor.stream
+        && shown.extension == donor.extension
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn live_feed_identity(title: &str) -> Option<(String, String)> {
+    let normalized = title.nfkc().collect::<String>().to_lowercase();
+    let (prefix, name) = normalized.split_once('|').unwrap_or(("", &normalized));
+    let prefix = prefix.trim();
+    let region = prefix
+        .strip_suffix("-cw")
+        .filter(|country| {
+            country.len() == 2 && country.bytes().all(|byte| byte.is_ascii_alphabetic())
+        })
+        .unwrap_or(prefix);
+    let mut words: Vec<_> = name.split_whitespace().collect();
+    while words.last().is_some_and(|word| {
+        matches!(
+            word.trim_matches(['[', ']', '(', ')']),
+            "raw" | "sd" | "hd" | "fhd" | "uhd" | "4k" | "8k" | "720p" | "1080p" | "2160p"
+        )
+    }) {
+        words.pop();
+    }
+    let mut station = String::new();
+    for word in words {
+        let joins_channel_number = word.starts_with(|c: char| c.is_ascii_digit())
+            && station.ends_with(char::is_alphabetic);
+        if !station.is_empty() && !joins_channel_number {
+            station.push(' ');
+        }
+        station.push_str(word);
+    }
+    (!station.is_empty()).then(|| (region.to_owned(), station))
+}
+
 fn live_neighbor_pair<'a>(
-    channels: impl Iterator<Item = &'a Item>,
+    mut channels: impl Iterator<Item = &'a Item>,
     current_id: &str,
 ) -> Option<(&'a Item, &'a Item)> {
-    let mut seen = HashSet::new();
-    let items: Vec<_> = channels
-        .filter(|item| seen.insert(item.id.as_str()))
-        .collect();
-    let Some(index) = items.iter().position(|item| item.id == current_id) else {
-        return Some((*items.last()?, *items.first()?));
-    };
-    let count = items.len();
-    (count > 1).then(|| {
-        (
-            items[(index + count - 1) % count],
-            items[(index + 1) % count],
-        )
-    })
+    let first = channels.next()?;
+    let mut seen = HashSet::from([first.id.as_str()]);
+    if first.id == current_id {
+        let next = channels.find(|item| item.id != current_id)?;
+        seen.insert(next.id.as_str());
+        let mut last = next;
+        for item in channels {
+            if seen.insert(item.id.as_str()) {
+                last = item;
+            }
+        }
+        return Some((last, next));
+    }
+    let mut distinct = channels.filter(|item| seen.insert(item.id.as_str()));
+    let mut previous = first;
+    while let Some(channel) = distinct.next() {
+        if channel.id == current_id {
+            return Some((previous, distinct.next().unwrap_or(first)));
+        }
+        previous = channel;
+    }
+    Some((previous, first))
 }
 
 #[cfg(test)]
@@ -1365,6 +1613,238 @@ mod catalog_index_tests {
             live.playback_url(&source).unwrap().path(),
             "/live/fixture-user/fixture-password/43.m3u8"
         );
+    }
+
+    #[test]
+    fn substitute_feeds_require_the_same_station_region_guide_and_a_visible_channel() {
+        let row = |id: &str, title: &str, epg: &str| Item {
+            id: id.into(),
+            title: title.into(),
+            epg_id: epg.into(),
+            category: id.into(),
+            kind: Kind::Live,
+            ..Item::default()
+        };
+        let logical = row("logical", "NL| Station1 4K", "station1.nl");
+        let mut catalog = Catalog::new(vec![
+            logical.clone(),
+            row("fhd", "NL| Station 1 FHD", "station1.nl"),
+            row("cable", "NL-CW| Station 1 ᴿᴬᵂ", "station1.nl"),
+            row("extra", "NL| Station 1 Extra HD", "station1.nl"),
+            row("delay", "NL| Station 1 +1 HD", "station1.nl"),
+            row("region", "BE| Station 1 HD", "station1.nl"),
+            row("edition", "NL-WEST| Station 1 HD", "station1.nl"),
+            row("language", "NL-EN| Station 1 HD", "station1.nl"),
+            row("other", "NL| Station 1 HD", "another.guide"),
+            row("missing", "NL| Station 1 HD", ""),
+        ]);
+        for id in ["fhd", "cable"] {
+            assert_eq!(catalog.equivalent_live_feed(&logical, id).unwrap().id, id);
+        }
+        for id in [
+            "logical", "extra", "delay", "region", "edition", "language", "other", "missing",
+        ] {
+            assert!(catalog.equivalent_live_feed(&logical, id).is_none(), "{id}");
+        }
+        catalog.apply_live_groups(&super::LiveGroups {
+            hidden: ["fhd".into()].into_iter().collect(),
+            ..Default::default()
+        });
+        assert!(catalog.equivalent_live_feed(&logical, "fhd").is_none());
+        assert!(
+            catalog
+                .equivalent_live_feed(&row("blank", "NL| Station 1", ""), "missing")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn live_feed_lookup_tracks_duplicate_ids_across_catalog_and_visibility_updates() {
+        let live = |id: &str, guide: &str, category: &str| Item {
+            kind: Kind::Live,
+            title: "Station".to_owned(),
+            id: id.to_owned(),
+            epg_id: guide.to_owned(),
+            category: category.to_owned(),
+            ..Item::default()
+        };
+        let logical = live("shown", "station", "main");
+        let mut catalog = Catalog::new(vec![live("alt", "other", "group")]);
+        assert!(catalog.equivalent_live_feed(&logical, "alt").is_none());
+        catalog.append(vec![live("alt", "station", "eligible")]);
+        assert_eq!(
+            catalog
+                .equivalent_live_feed(&logical, "alt")
+                .unwrap()
+                .category,
+            "eligible"
+        );
+        catalog.apply_live_groups(&super::LiveGroups {
+            hidden: ["eligible".to_owned()].into_iter().collect(),
+            ..Default::default()
+        });
+        assert!(catalog.equivalent_live_feed(&logical, "alt").is_none());
+    }
+
+    #[test]
+    fn off_page_feed_winners_are_cached_for_playback_only() {
+        use crate::live_feeds::{FeedSample, Feeds};
+
+        let station = |id: &str, category: &str| Item {
+            id: id.to_owned(),
+            title: "Station".to_owned(),
+            epg_id: "station.guide".to_owned(),
+            kind: Kind::Live,
+            category: category.to_owned(),
+            ..Item::default()
+        };
+        let first = vec![station("shown", "main"), station("duplicate", "main")];
+        let mut fast = station("fast", "extra");
+        fast.stream = "https://example.test/stream".to_owned();
+        fast.poster = "unused-image".to_owned();
+        let mut full = Catalog::new(first.clone());
+        full.append(vec![fast.clone(), station("faster-hidden", "hidden")]);
+        let groups = super::LiveGroups {
+            hidden: ["hidden".to_owned()].into_iter().collect(),
+            ..Default::default()
+        };
+        full.apply_live_groups(&groups);
+        let mut timings = Feeds::default();
+        for (id, startup_ms) in [
+            ("shown", 6800),
+            ("duplicate", 6400),
+            ("fast", 900),
+            ("faster-hidden", 700),
+        ] {
+            timings.record(
+                "source",
+                id,
+                100,
+                FeedSample {
+                    startup_ms,
+                    width: 1920,
+                    height: 1080,
+                    epg_id: "station.guide",
+                    format: None,
+                },
+            );
+        }
+        assert!(timings.has_samples_for_source("source"));
+        assert!(!timings.has_samples_for_source("other"));
+        assert!(
+            full.preview_feed_routes(&first, &timings, "other", 111)
+                .is_empty()
+        );
+        assert!(
+            full.preview_feed_routes(&first, &timings, "source", 800_000)
+                .is_empty()
+        );
+        let routes = full.preview_feed_routes(&first, &timings, "source", 111);
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].id, "fast");
+        assert!(routes[0].poster.is_empty());
+        let mut preview = Catalog::new(first.clone());
+        preview.set_preview_feed_routes(routes);
+        let ready = preview.equivalent_live_feed(&first[0], "fast").unwrap();
+        assert_eq!(ready.stream, fast.stream);
+        assert!(
+            preview
+                .equivalent_live_feed(&first[1], "faster-hidden")
+                .is_none()
+        );
+        assert_eq!(preview.visible_items(false).count(), 2);
+        assert_eq!(preview.search("Station", "", false, 10).0.len(), 2);
+        preview.apply_live_groups(&super::LiveGroups {
+            hidden: ["extra".to_owned()].into_iter().collect(),
+            ..Default::default()
+        });
+        assert!(preview.equivalent_live_feed(&first[0], "fast").is_none());
+
+        let mut on_page = first.clone();
+        on_page.push(fast);
+        assert!(
+            full.preview_feed_routes(&on_page, &timings, "source", 111)
+                .is_empty()
+        );
+        full.apply_live_groups(&super::LiveGroups::default());
+        let unhidden = full.preview_feed_routes(&first, &timings, "source", 111);
+        assert!(unhidden.iter().any(|feed| feed.id == "faster-hidden"));
+    }
+
+    #[test]
+    fn preview_retains_alternatives_across_cooldown_and_duplicate_guide_ids() {
+        use crate::live_feeds::{FeedSample, Feeds};
+        use crate::live_routes::{FAILURE_COOLDOWN_SECS, SAMPLE_LIFETIME_SECS};
+
+        let station = |id: &str, guide: &str| Item {
+            kind: Kind::Live,
+            id: id.to_owned(),
+            title: "Station".to_owned(),
+            epg_id: guide.to_owned(),
+            ..Item::default()
+        };
+        let listed = vec![station("main", "guide"), station("speedy", "different")];
+        let mut full = Catalog::new(listed.clone());
+        full.append(vec![
+            station("speedy", "guide"),
+            station("backup", "guide"),
+            station("slow", "guide"),
+        ]);
+        let mut timings = Feeds::default();
+        for (id, at, ms) in [
+            ("main", 150, 6500),
+            ("speedy", 100, 900),
+            ("backup", 150, 1500),
+            ("slow", 150, 7200),
+        ] {
+            timings.record(
+                "account",
+                id,
+                at,
+                FeedSample {
+                    format: None,
+                    startup_ms: ms,
+                    width: 640,
+                    height: 360,
+                    epg_id: "guide",
+                },
+            );
+        }
+        assert!(!timings.has_preview_candidate("account", &listed[1..], 160));
+        assert!(timings.has_preview_candidate("account", &listed, 160));
+        assert!(!timings.has_preview_candidate("account", &listed, 160 + SAMPLE_LIFETIME_SECS));
+        timings.failure("account", "speedy", 160, None);
+        let routes = full.preview_feed_routes(&listed, &timings, "account", 161);
+        assert_eq!(
+            routes.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            ["speedy", "backup"]
+        );
+        let mut restored = Catalog::new(listed.clone());
+        restored.set_preview_feed_routes(routes);
+        let choose = |now| {
+            timings
+                .best_feed("account", "main", "guide", now, |id| {
+                    restored.equivalent_live_feed(&listed[0], id).is_some()
+                })
+                .map(|(id, _, _)| id)
+        };
+        assert_eq!(choose(161), Some("backup"));
+        assert_eq!(choose(161 + FAILURE_COOLDOWN_SECS), Some("speedy"));
+        assert_eq!(choose(101 + SAMPLE_LIFETIME_SECS), Some("backup"));
+        assert_eq!(restored.visible_items(false).count(), 2);
+    }
+
+    #[test]
+    fn zapping_stops_at_the_next_distinct_channel() {
+        let items = ["a", "a", "b", "a", "b", "c", "d"].map(|id| Item {
+            id: id.into(),
+            ..Item::default()
+        });
+        let mut visited = 0;
+        let channels = items.iter().inspect(|_| visited += 1);
+        let (previous, next) = super::live_neighbor_pair(channels, "b").unwrap();
+        assert_eq!((previous.id.as_str(), next.id.as_str()), ("a", "c"));
+        assert_eq!(visited, 6);
     }
 
     #[test]
@@ -1423,6 +1903,44 @@ mod catalog_index_tests {
             (vec![0, 1, 2], 3)
         );
         assert_eq!(catalog.categories(true), ["EN - Movies", "NL - Films"]);
+    }
+
+    #[test]
+    fn narrowing_search_preserves_duplicate_variants_filters_and_new_batches() {
+        let movie = |id: &str, title: &str| Item {
+            id: id.to_owned(),
+            title: title.to_owned(),
+            ..Item::default()
+        };
+        let mut catalog = Catalog::new(vec![
+            movie("1", "North wind"),
+            movie("1", "North star"),
+            movie("2", "DE - North star"),
+        ]);
+        assert_eq!(catalog.search("no", "", true, 1), (vec![0], 1));
+        assert_eq!(catalog.search("north star", "", true, 1), (vec![1], 1));
+        assert_eq!(catalog.search("north star", "", false, 2), (vec![1, 2], 2));
+        catalog.append(vec![movie("3", "North stars")]);
+        assert_eq!(catalog.search("north stars", "", true, 1), (vec![3], 1));
+    }
+
+    #[test]
+    fn narrowing_a_broad_search_keeps_matches_beyond_the_shortlist() {
+        let mut titles: Vec<_> = (0..super::SEARCH_SHORTLIST_LIMIT)
+            .map(|index| Item {
+                id: index.to_string(),
+                title: "Valley".into(),
+                ..Item::default()
+            })
+            .collect();
+        let last = titles.len();
+        titles.push(Item {
+            title: "Valley lake".into(),
+            ..Item::default()
+        });
+        let catalog = Catalog::new(titles);
+        assert_eq!(catalog.search("val", "", false, 1), (vec![0], last + 1));
+        assert_eq!(catalog.search("valley lake", "", false, 1), (vec![last], 1));
     }
 
     #[test]

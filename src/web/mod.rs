@@ -1,6 +1,7 @@
 mod i18n;
 mod io;
 mod live;
+mod live_preview;
 mod picker;
 mod player;
 mod poster;
@@ -56,12 +57,6 @@ struct SourceProfile {
     id: u64,
     name: String,
     source: Source,
-}
-
-#[derive(Deserialize, Serialize)]
-struct LivePreview {
-    groups: Option<catalog::LiveGroups>,
-    items: Vec<Item>,
 }
 
 impl Settings {
@@ -231,7 +226,8 @@ struct App {
     document: Document,
     settings: Settings,
     library: Library,
-    live_routes: player::LiveRoutes,
+    live_routes: crate::live_routes::Routes,
+    live_feeds: crate::live_feeds::Feeds,
     source_key: String,
     adding_source: bool,
     setup_m3u: bool,
@@ -241,6 +237,7 @@ struct App {
     model: HashMap<Kind, Catalog>,
     public_radio: Catalog,
     catalog_previews: HashMap<Kind, Catalog>,
+    live_preview: live_preview::Cache,
     vod_partial: HashMap<Kind, Catalog>,
     pending: HashSet<Kind>,
     failures: HashMap<Kind, String>,
@@ -554,7 +551,14 @@ fn boot(document: Document, mut settings: Settings, mut library: Library) -> Res
         document: document.clone(),
         settings,
         library,
-        live_routes: player::LiveRoutes::load(),
+        live_routes: vault::load(player::LIVE_ROUTES_KEY)
+            .ok()
+            .flatten()
+            .unwrap_or_default(),
+        live_feeds: vault::load(player::LIVE_FEEDS_KEY)
+            .ok()
+            .flatten()
+            .unwrap_or_default(),
         source_key,
         adding_source: false,
         setup_m3u: false,
@@ -564,6 +568,7 @@ fn boot(document: Document, mut settings: Settings, mut library: Library) -> Res
         model: HashMap::new(),
         public_radio: public_radio_catalog(),
         catalog_previews: HashMap::new(),
+        live_preview: live_preview::Cache::default(),
         vod_partial: HashMap::new(),
         pending: HashSet::new(),
         failures: HashMap::new(),
@@ -590,12 +595,11 @@ fn boot(document: Document, mut settings: Settings, mut library: Library) -> Res
     search_keyboard::build(&app.borrow());
     wire(&app)?;
     player::wire(&app)?;
-    ui::render(&app);
+    open_view(&app, view);
     document
         .document_element()
         .ok_or(tr("Pagina ontbreekt"))?
         .set_attribute("data-ready", "true")?;
-    open_view(&app, view);
     if let Some(choice) = document.get_element_by_id("setup-xtream") {
         focus(&document, &choice);
     }
@@ -1416,6 +1420,10 @@ fn change_group(app: &Shared, command: &str) {
     if let Some(catalog) = state.model.get_mut(&Kind::Live) {
         catalog.apply_live_groups(&settings);
     }
+    if let Some(timestamp) = state.live_preview.timestamp() {
+        let key = format!("{}:first:{id}", state.catalog_key(Kind::Live));
+        live_preview::rebuild(app, &mut state, &key, timestamp);
+    }
     ui::refresh_group_editor(&state);
 }
 
@@ -1438,6 +1446,7 @@ fn activate_source(app: &Shared, settings: Settings) {
     state.revision += 1;
     state.model.clear();
     state.catalog_previews.clear();
+    state.live_preview.forget_current();
     state.vod_partial.clear();
     state.pending.clear();
     state.failures.clear();
@@ -1588,15 +1597,31 @@ fn catalog_job(
         }
         let preview_key = format!("{key}:first:{profile_id}");
         if needs_preview {
-            let shown = restore_live_preview(&app, &preview_key, revision).await;
+            let mut preview =
+                io::read_recent::<live_preview::Preview>(&preview_key, io::CATALOG_RETENTION_MS)
+                    .await;
+            let has_routes = preview
+                .as_ref()
+                .is_some_and(|entry| entry.value.has_routes());
+            let needs_upgrade = !has_routes && {
+                let state = app.borrow();
+                preview
+                    .as_ref()
+                    .is_some_and(|entry| entry.value.has_measured_candidate(&state))
+            };
+            let shown = !needs_upgrade
+                && preview.take().is_some_and(|entry| {
+                    live_preview::publish(&app, &preview_key, revision, entry)
+                });
             if shown {
                 io::after_frame().await;
             }
+            let preview_opened = shown.then(js_sys::Date::now);
             let mut legacy = false;
-            let mut cached = io::read_recent::<Vec<Item>>(&key, io::CATALOG_RETENTION_MS).await;
+            let mut cached = read_live_snapshot(&app, &key, revision, preview_opened).await;
             if cached.is_none() && app.borrow().revision == revision {
                 let old_key = key.trim_end_matches("groups-v3").to_owned() + "groups-v2";
-                cached = io::read_recent::<Vec<Item>>(&old_key, io::CATALOG_RETENTION_MS).await;
+                cached = read_live_snapshot(&app, &old_key, revision, preview_opened).await;
                 legacy = true;
             }
             if let Some(entry) = cached
@@ -1604,14 +1629,20 @@ fn catalog_job(
             {
                 let refreshing = refresh || legacy || entry.age_ms > io::CATALOG_FRESH_MS;
                 publish_live_catalog(&app, revision, Ok(entry.value), refreshing);
-                if !shown && !legacy {
+                let same_snapshot =
+                    app.borrow().live_preview.timestamp() == Some(entry.timestamp_ms);
+                if (!shown || !has_routes || !same_snapshot) && !legacy {
                     store_live_cache(&app, revision, &key, &preview_key, Some(entry.timestamp_ms))
                         .await;
+                } else if shown && has_routes && app.borrow().revision == revision {
+                    app.borrow_mut().live_preview.refresh(&app);
                 }
                 if !refreshing {
                     return;
                 }
                 io::after_frame().await;
+            } else if let Some(entry) = preview {
+                live_preview::publish(&app, &preview_key, revision, entry);
             }
         }
         if app.borrow().revision != revision {
@@ -1637,23 +1668,47 @@ fn catalog_job(
     })
 }
 
-async fn restore_live_preview(app: &Shared, key: &str, revision: u64) -> bool {
-    let Some(entry) = io::read_recent::<LivePreview>(key, io::CATALOG_RETENTION_MS).await else {
-        return false;
-    };
-    let mut state = app.borrow_mut();
-    if state.revision != revision
-        || state.live_groups() != entry.value.groups.as_ref()
-        || entry.value.items.is_empty()
-    {
-        return false;
+async fn read_live_snapshot(
+    app: &Shared,
+    key: &str,
+    revision: u64,
+    preview_opened: Option<f64>,
+) -> Option<io::CacheEntry<Vec<Item>>> {
+    let raw = io::cached_raw(key).await?;
+    if let Some(opened) = preview_opened {
+        // Give a first-page click a chance to reach the player before synchronous JSON parsing.
+        let remaining = (opened + 250. - js_sys::Date::now()).clamp(0., 250.) as i32;
+        if remaining > 0 {
+            io::delay(remaining).await;
+        }
+        io::after_frame().await;
+        // On webOS the native video plane can present its first picture well after “playing”.
+        // Let it settle before indexing, unless the viewer opens the guide or leaves playback.
+        let mut playing_since = None;
+        for _ in 0..50 {
+            let hold_catalog = {
+                let state = app.borrow();
+                state.revision == revision
+                    && !state.document.hidden()
+                    && !state.live_guide.is_open()
+                    && state.playback.as_ref().is_some_and(|play| {
+                        play.item.kind == Kind::Live
+                            && !play.stream_failed
+                            && (!play.started
+                                || js_sys::Date::now()
+                                    - *playing_since.get_or_insert_with(js_sys::Date::now)
+                                    < 1500.)
+                    })
+            };
+            if !hold_catalog {
+                break;
+            }
+            io::delay(100).await;
+        }
     }
-    state
-        .catalog_previews
-        .insert(Kind::Live, Catalog::new(entry.value.items));
-    drop(state);
-    maybe_render(app, Kind::Live);
-    true
+    (app.borrow().revision == revision)
+        .then(|| io::decode_recent(&raw, io::CATALOG_RETENTION_MS))
+        .flatten()
 }
 
 async fn store_live_cache(
@@ -1664,57 +1719,34 @@ async fn store_live_cache(
     snapshot_time: Option<f64>,
 ) {
     io::after_frame().await;
-    let (preview, all) = {
-        let state = app.borrow();
-        let Some(catalog) = state
-            .model
-            .get(&Kind::Live)
-            .filter(|_| state.revision == revision)
-        else {
+    let timestamp = snapshot_time.unwrap_or_else(js_sys::Date::now);
+    let all = {
+        let mut state = app.borrow_mut();
+        if state.revision != revision || !state.model.contains_key(&Kind::Live) {
             return;
-        };
-        let mut seen = HashSet::new();
-        let first_items = catalog
-            .visible_items(false)
-            .take(PAGE_SIZE)
-            .chain(catalog.visible_items(true).take(PAGE_SIZE))
-            .filter(|item| seen.insert(item.id.as_str()))
-            .cloned()
-            .collect::<Vec<_>>();
-        let preview = LivePreview {
-            groups: state.live_groups().cloned(),
-            items: first_items,
-        };
-        (
-            preview,
-            snapshot_time.is_none().then(|| {
-                catalog
-                    .items
-                    .iter()
-                    .chain(
-                        state
-                            .model
-                            .get(&Kind::Radio)
-                            .into_iter()
-                            .flat_map(|radio| &radio.items),
-                    )
-                    .cloned()
-                    .collect::<Vec<_>>()
-            }),
-        )
+        }
+        live_preview::rebuild(app, &mut state, preview_key, timestamp);
+        snapshot_time.is_none().then(|| {
+            state
+                .model
+                .get(&Kind::Live)
+                .into_iter()
+                .flat_map(|catalog| &catalog.items)
+                .chain(
+                    state
+                        .model
+                        .get(&Kind::Radio)
+                        .into_iter()
+                        .flat_map(|radio| &radio.items),
+                )
+                .cloned()
+                .collect::<Vec<_>>()
+        })
     };
-    if !preview.items.is_empty() {
-        io::put_at(
-            preview_key,
-            &preview,
-            snapshot_time.unwrap_or_else(js_sys::Date::now),
-        )
-        .await;
-    }
     if let Some(all) = all
         && app.borrow().revision == revision
     {
-        io::put(key, &all).await;
+        io::put_at(key, &all, timestamp).await;
     }
 }
 

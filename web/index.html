@@ -111,29 +111,33 @@
       </header>
       <div id="live-guide-content"></div>
     </section>
-    <section id="subtitle-panel" class="subtitle-panel" aria-labelledby="subtitle-heading" hidden>
-      <div class="subtitle-header">
+    <aside id="subtitle-panel" class="subtitle-panel" aria-labelledby="subtitle-heading" hidden>
+      <header class="subtitle-sidebar-header" data-subtitle-row>
         <h2 id="subtitle-heading" data-i18n="Ondertitels">Ondertitels</h2>
         <button id="subtitle-close" data-cmd="subs-close" data-i18n="Terug">Terug</button>
-      </div>
-      <div id="subtitle-tracks" class="track-list"></div>
-      <div id="subtitle-online" class="subtitle-online">
-        <label id="subtitle-online-label" for="subtitle-query" data-i18n="Online zoeken">Online zoeken</label>
-        <div class="subtitle-tools">
-          <input id="subtitle-query" type="search" autocomplete="off" spellcheck="false">
-          <button class="primary" id="subtitle-best-button" data-cmd="subs-best" data-i18n="Beste match">Beste match</button>
-          <button id="subtitle-search-button" data-cmd="subs-search" data-i18n="Zoeken">Zoeken</button>
+      </header>
+      <div id="subtitle-body" class="subtitle-body">
+        <div id="subtitle-tracks" class="track-list"></div>
+        <div id="subtitle-size" class="subtitle-size" role="group" aria-labelledby="subtitle-size-heading">
+          <h3 id="subtitle-size-heading" data-i18n="Tekstgrootte">Tekstgrootte</h3>
+          <div class="subtitle-size-options" data-subtitle-row>
+            <button data-cmd="subtitle-size" data-value="100" aria-pressed="false">100%</button>
+            <button data-cmd="subtitle-size" data-value="120" aria-pressed="true">120%</button>
+            <button data-cmd="subtitle-size" data-value="150" aria-pressed="false">150%</button>
+          </div>
         </div>
+        <div id="subtitle-online" class="subtitle-online">
+          <label id="subtitle-online-label" for="subtitle-query" data-i18n="Online zoeken">Online zoeken</label>
+          <input id="subtitle-query" type="search" autocomplete="off" spellcheck="false">
+          <div class="subtitle-tools" data-subtitle-row>
+            <button class="primary" id="subtitle-best-button" data-cmd="subs-best" data-i18n="Beste match">Beste match</button>
+            <button id="subtitle-search-button" data-cmd="subs-search" data-i18n="Zoeken">Zoeken</button>
+          </div>
+        </div>
+        <p id="subtitle-notice" class="notice" role="status"></p>
+        <div id="subtitle-results" class="subtitle-results"></div>
       </div>
-      <div id="subtitle-size" class="subtitle-size" role="group" aria-label="Tekstgrootte" data-i18n-aria="Tekstgrootte">
-        <span aria-hidden="true">Aa</span>
-        <button data-cmd="subtitle-size" data-value="100" aria-pressed="false">100%</button>
-        <button data-cmd="subtitle-size" data-value="120" aria-pressed="true">120%</button>
-        <button data-cmd="subtitle-size" data-value="150" aria-pressed="false">150%</button>
-      </div>
-      <p id="subtitle-notice" class="notice" role="status"></p>
-      <div id="subtitle-results" class="subtitle-results"></div>
-    </section>
+    </aside>
   </section>
 </body>
 </html>

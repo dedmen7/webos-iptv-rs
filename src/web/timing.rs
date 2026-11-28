@@ -1,7 +1,7 @@
 use crate::sync::{self, AudioSample, Cue, Timing, TimingPoint};
 use js_sys::{Function, Reflect};
 use std::collections::VecDeque;
-use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::{
     AnalyserNode, AudioContext, AudioContextState, HtmlVideoElement, MediaStream, MediaStreamTrack,
@@ -22,10 +22,16 @@ pub struct AudioSync {
     samples: VecDeque<AudioSample>,
     last_check: f64,
     bins: [u8; 512],
+    sample_interval: Option<i32>,
+    on_sample: Closure<dyn FnMut()>,
 }
 
 impl AudioSync {
-    pub fn start(video: &HtmlVideoElement, cues: Vec<Cue>) -> Result<Self, JsValue> {
+    pub fn start(
+        video: &HtmlVideoElement,
+        cues: Vec<Cue>,
+        sample: impl FnMut() + 'static,
+    ) -> Result<Self, JsValue> {
         meaningful(&cues)?;
         let method: Function =
             Reflect::get(video, &JsValue::from_str("captureStream"))?.dyn_into()?;
@@ -50,7 +56,7 @@ impl AudioSync {
             }
         };
         quiet(context.resume());
-        Ok(Self {
+        let mut sync = Self {
             context,
             audio,
             track,
@@ -62,7 +68,17 @@ impl AudioSync {
             samples: VecDeque::with_capacity(650),
             last_check: video.current_time(),
             bins: [0; 512],
-        })
+            sample_interval: None,
+            on_sample: Closure::new(sample),
+        };
+        let window = web_sys::window().ok_or(JsValue::NULL)?;
+        sync.sample_interval = Some(
+            window.set_interval_with_callback_and_timeout_and_arguments_0(
+                sync.on_sample.as_ref().unchecked_ref(),
+                100,
+            )?,
+        );
+        Ok(sync)
     }
 
     pub fn skip(&mut self, time: f64) {
@@ -151,6 +167,11 @@ impl AudioSync {
 
 impl Drop for AudioSync {
     fn drop(&mut self) {
+        if let Some(interval) = self.sample_interval
+            && let Some(window) = web_sys::window()
+        {
+            window.clear_interval_with_handle(interval);
+        }
         stop_tracks(&self.audio);
         quiet(self.context.close());
     }

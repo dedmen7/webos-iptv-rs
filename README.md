@@ -14,6 +14,7 @@ Orbis is an open-source IPTV player for **LG webOS 5.0 and later**. Its Rust/Web
 
 - Browse live TV, radio, movies, and series with your remote. Search movies and series separately and filter by genre.
 - Open a quick program guide during live TV and see what is on now and next when guide data is available.
+- Orbis remembers how quickly each live channel starts on your TV. After you watch another feed of the same station, Orbis can reuse it if it starts faster, matches the station and guide ID, and delivers at least the same measured resolution. The startup channel list also saves the matching feeds, so opening a channel can use the faster stream while the full list loads.
 - Resume movies and episodes, mark titles as watched, and save movies and series to My List.
 - Choose Dutch or English subtitles, including English CC where available. Add OpenSubtitles and SubDL in Settings to search online.
 - Resize subtitles to **100%, 120%, or 150%** and adjust their timing in half-second steps. Orbis remembers your size, subtitle selection, and timing corrections. Automatic timing depends on whether the stream exposes audio to the app.
@@ -35,7 +36,7 @@ Orbis follows the TV language for English, Dutch, German, and French. Sources an
 3. Install the `.ipk` with the LG webOS CLI. In the commands below, replace `lg-tv` with the name you paired and use the filename you downloaded.
 
    ```sh
-   ares-install --device lg-tv ./com.dedmen7.orbisiptv_0.1.57_all.ipk
+   ares-install --device lg-tv ./com.dedmen7.orbisiptv_0.1.62_all.ipk
    ares-launch --device lg-tv com.dedmen7.orbisiptv
    ```
 

@@ -716,13 +716,14 @@ dependencies = [
 
 [[package]]
 name = "webos-iptv-rs"
-version = "0.1.57"
+version = "0.1.62"
 dependencies = [
  "aes-gcm",
  "base64",
  "chrono",
  "futures",
  "js-sys",
+ "memchr",
  "miniz_oxide",
  "quick-xml",
  "serde",

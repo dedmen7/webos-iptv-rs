@@ -61,9 +61,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut script = fs::read_to_string(dist.join("player.js"))?;
     let wasm = fs::read(dist.join("player_bg.wasm"))?;
     let encoded = STANDARD.encode(wasm);
-    script.push_str(&format!(
-        "\nif(typeof WebAssembly!=='undefined'){{wasm_bindgen({{module_or_path:Uint8Array.from(atob('{encoded}'),c=>c.charCodeAt(0))}}).catch(error=>{{console.error('Orbis IPTV startup',error);const system=window.webOSSystem||window.PalmSystem||{{}};const lang=(system.locale||navigator.language||'en').split(/[-_]/)[0].toLowerCase();const messages={{en:'Orbis IPTV could not start.',nl:'Orbis IPTV kon niet starten.',de:'Orbis IPTV konnte nicht gestartet werden.',fr:'Orbis IPTV n’a pas pu démarrer.'}};document.getElementById('initial').setAttribute('data-error','');document.getElementById('initial-message').textContent=messages[lang]||messages.en;}});}}\n"
-    ));
+    script.push_str(include_str!("../../web/startup.js"));
+    script.push_str(&format!("\nstartOrbis('{encoded}');\n"));
     let bundle = dist.join("player.js");
     fs::write(&bundle, script)?;
     fs::remove_file(dist.join("player_bg.wasm"))?;

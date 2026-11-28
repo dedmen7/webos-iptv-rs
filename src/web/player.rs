@@ -5,16 +5,15 @@ use super::{
 };
 use crate::{
     catalog::{Item, Kind, Language, http_url, language, subtitle_title},
+    live_feeds::FeedSample,
+    live_routes::{Choice, FEED_TRIAL_THRESHOLD_MS, Format},
     series::SeriesProgress,
     subtitles::{self, Download, Subtitle},
     sync::Timing,
 };
 use js_sys::{Array, Reflect};
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::HashMap,
-    hash::{DefaultHasher, Hash, Hasher},
-};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::{
@@ -29,9 +28,8 @@ const LIVE_NO_METADATA_TIMEOUT_MS: i32 = 6_000;
 const KNOWN_LIVE_ROUTE_TIMEOUT_MS: i32 = 9_000;
 const LIVE_STALL_SECONDS: i64 = 8;
 const LIVE_RECOVERY_RESET_SECONDS: i64 = 30;
-const LIVE_ROUTES_KEY: &str = "iptv-rs.live-routes";
-const LIVE_ROUTE_MAX_AGE: i64 = 7 * 24 * 60 * 60;
-const LIVE_ROUTE_LIMIT: usize = 128;
+pub(super) const LIVE_ROUTES_KEY: &str = "iptv-rs.live-routes";
+pub(super) const LIVE_FEEDS_KEY: &str = "iptv-rs.live-feeds";
 const STREAM_FAILED: &str = "Deze stream kon niet worden afgespeeld.";
 const STREAM_RECONNECTING: &str = "Verbinding herstellen…";
 const RADIO_LOADING: &str = "Radiozender laden…";
@@ -78,51 +76,99 @@ impl StreamHealth {
     }
 }
 
-#[derive(Default, Deserialize, Serialize)]
-pub(super) struct LiveRoutes(HashMap<String, i64>);
-
 pub(super) struct LiveRoute {
     key: String,
-    using_alternate: bool,
+    choice: Option<Choice>,
+    source: String,
+    physical_id: String,
+    epg_id: String,
+    url: url::Url,
+    startup: Option<StartupClock>,
+    awaiting_picture: bool,
+    fallback: Option<Box<StreamUrls>>,
+    previous_urls: Vec<url::Url>,
+    donor_limit_ms: Option<u32>,
 }
 
-impl LiveRoutes {
-    pub fn load() -> Self {
-        super::vault::load(LIVE_ROUTES_KEY)
-            .ok()
-            .flatten()
-            .unwrap_or_default()
+fn media_clock_ms() -> f64 {
+    web_sys::window()
+        .and_then(|window| window.performance())
+        .map_or_else(js_sys::Date::now, |clock| clock.now())
+}
+
+impl LiveRoute {
+    fn trial_limit_ms(&self) -> Option<u32> {
+        self.donor_limit_ms
+            .or_else(|| self.choice.as_ref()?.trial_limit_ms)
     }
 
-    fn prefers_alternate(&self, key: &str, now: i64) -> bool {
-        self.0
-            .get(key)
-            .is_some_and(|saved| (0..LIVE_ROUTE_MAX_AGE).contains(&now.saturating_sub(*saved)))
+    fn current(&self, video: &web_sys::HtmlVideoElement) -> bool {
+        video.current_src() == self.url.as_str() && video.src() == self.url.as_str()
     }
+}
 
-    fn record(&mut self, route: &LiveRoute) {
-        let now = io::now();
-        if route.using_alternate {
-            if self.prefers_alternate(&route.key, now) {
-                return;
-            }
-            self.0
-                .retain(|_, saved| (0..LIVE_ROUTE_MAX_AGE).contains(&now.saturating_sub(*saved)));
-            if self.0.len() >= LIVE_ROUTE_LIMIT
-                && let Some(oldest) = self
-                    .0
-                    .iter()
-                    .min_by_key(|(_, saved)| *saved)
-                    .map(|(key, _)| key.clone())
-            {
-                self.0.remove(&oldest);
-            }
-            self.0.insert(route.key.clone(), now);
-        } else if self.0.remove(&route.key).is_none() {
-            return;
+#[derive(Clone, Copy)]
+enum StartupClock {
+    Cold { started_at: f64 },
+    Focused { started_at: f64, idle_ms: f64 },
+}
+
+impl StartupClock {
+    fn cold() -> Self {
+        Self::Cold {
+            started_at: media_clock_ms(),
         }
-        io::save_private(LIVE_ROUTES_KEY, self);
     }
+
+    fn elapsed_ms(self) -> Option<u32> {
+        let now = media_clock_ms();
+        let elapsed = match self {
+            Self::Cold { started_at } => now - started_at,
+            Self::Focused {
+                started_at,
+                idle_ms,
+            } => now - started_at - idle_ms,
+        };
+        (0.0..=f64::from(STREAM_START_TIMEOUT_MS))
+            .contains(&elapsed)
+            .then(|| elapsed.round().max(1.0) as u32)
+    }
+}
+
+struct PreloadedStream {
+    url: url::Url,
+    load_started_at: Option<f64>,
+    decoded_at: Option<f64>,
+}
+
+impl PreloadedStream {
+    fn startup(&self, video: &web_sys::HtmlVideoElement, selected_at: f64) -> Option<StartupClock> {
+        let current = video.current_src();
+        if (!current.is_empty() && current != self.url.as_str()) || video.seeking() {
+            return None;
+        }
+        let (started_at, idle_ms) = match (self.load_started_at, self.decoded_at) {
+            (Some(start), Some(decoded)) => (start, selected_at - decoded),
+            (_, _) if has_picture(video) => return None,
+            (Some(start), None) if video.network_state() == HtmlMediaElement::NETWORK_LOADING => {
+                (start, 0.)
+            }
+            (None, None) if video.ready_state() == HtmlMediaElement::HAVE_NOTHING => {
+                (selected_at, 0.)
+            }
+            _ => return None,
+        };
+        Some(StartupClock::Focused {
+            started_at,
+            idle_ms,
+        })
+    }
+}
+
+fn has_picture(video: &web_sys::HtmlVideoElement) -> bool {
+    video.ready_state() >= HtmlMediaElement::HAVE_CURRENT_DATA
+        && video.video_width() > 0
+        && video.video_height() > 0
 }
 
 struct StreamUrls {
@@ -135,7 +181,7 @@ pub(super) struct LivePreload {
     key: String,
     revision: u64,
     sequence: u64,
-    url: Option<url::Url>,
+    stream: Option<PreloadedStream>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -193,6 +239,12 @@ impl SubtitleSize {
 pub fn wire(app: &Shared) -> Result<(), JsValue> {
     render_subtitle_size(&app.borrow());
     let video = app.borrow().video();
+    for event in ["loadstart", "loadeddata", "canplay", "resize"] {
+        let shared = app.clone();
+        on(&video, event, move |_| {
+            observe_preload(&shared, event == "loadstart")
+        })?;
+    }
     let shared = app.clone();
     on(&video, "loadedmetadata", move |_| {
         let mut state = shared.borrow_mut();
@@ -255,6 +307,24 @@ pub fn wire(app: &Shared) -> Result<(), JsValue> {
             health.observation = None;
         }
         if shared.borrow().document.hidden() {
+            {
+                let mut state = shared.borrow_mut();
+                if state
+                    .live_preload
+                    .take()
+                    .is_some_and(|preload| preload.stream.is_some())
+                {
+                    release_preloaded_media(&state);
+                }
+            }
+            if let Some(route) = shared
+                .borrow_mut()
+                .playback
+                .as_mut()
+                .and_then(|play| play.live_route.as_mut())
+            {
+                route.startup = None;
+            }
             save_position(&shared, true, false);
         } else {
             focus_live_video(&shared.borrow());
@@ -298,6 +368,12 @@ pub fn wire(app: &Shared) -> Result<(), JsValue> {
             return;
         };
         if play.stream_failed
+            || play.live_route.as_ref().is_some_and(|route| {
+                let current = video.current_src();
+                video.error().is_none()
+                    || video.src() != route.url.as_str()
+                    || (!current.is_empty() && current != route.url.as_str())
+            })
             || play
                 .stream_health
                 .as_ref()
@@ -332,67 +408,40 @@ pub fn wire(app: &Shared) -> Result<(), JsValue> {
         restore_tracks(&shared.borrow())
     })?;
     let shared = app.clone();
-    on(&video, "playing", move |_| {
-        let save_episode = {
-            let mut state = shared.borrow_mut();
-            let video = state.video();
-            let App {
-                playback,
-                live_routes,
-                ..
-            } = &mut *state;
-            let Some(play) = playback else { return };
-            if play.stream_failed
-                || (play.stream_health.as_ref().is_some_and(|health| {
-                    health.user_paused
-                        || video.paused()
-                        || video.ready_state() < HtmlMediaElement::HAVE_CURRENT_DATA
-                }))
-            {
-                return;
-            }
-            let first_play = !play.started;
-            play.started = true;
-            play.completed = false;
-            if first_play && let Some(route) = &play.live_route {
-                live_routes.record(route);
-            }
-            play.item.kind == Kind::Episode
-        };
-        if save_episode {
-            save_position(&shared, true, false);
-        }
-        let mut state = shared.borrow_mut();
-        state.hide_live_loading();
-        live::record_playing(&mut state);
-        focus_live_video(&state);
-        if state.playback.as_ref().is_some_and(|play| {
-            play.selected_subtitle.is_some() && play.sync_enabled && play.sync.is_none()
-        }) {
-            configure_sync(&mut state);
-        }
-        if state.playback.is_some()
-            && !state
+    on(&video, "playing", move |_| media_playing(&shared))?;
+    for event in ["resize", "timeupdate"] {
+        let shared = app.clone();
+        on(&video, event, move |_| {
+            if shared
+                .borrow()
                 .playback
                 .as_ref()
-                .is_some_and(|playback| playback.panel)
-        {
-            state.player_note("");
-        }
-        restore_tracks(&state);
-        update_timeline(&state);
-    })?;
+                .and_then(|play| play.live_route.as_ref())
+                .is_some_and(|route| route.awaiting_picture)
+            {
+                media_playing(&shared);
+            }
+        })?;
+    }
     let shared = app.clone();
     on(&video, "click", move |_| {
-        let live = shared
+        let playback = shared
             .borrow()
             .playback
             .as_ref()
-            .is_some_and(|play| play.item.kind == Kind::Live);
+            .map(|play| (play.item.kind, play.panel));
+        let Some((kind, panel)) = playback else {
+            return;
+        };
+        if panel {
+            show_panel(&shared, false);
+            return;
+        }
+        let live = kind == Kind::Live;
         if live && dismiss_controls(&shared) {
             return;
         }
-        if !show_controls(&shared) && !live && shared.borrow().playback.is_some() {
+        if !show_controls(&shared) && !live {
             toggle(&shared);
         }
     })?;
@@ -409,8 +458,8 @@ pub fn wire(app: &Shared) -> Result<(), JsValue> {
         }
     })?;
     let playback_monitor = app.clone();
+    let shifted = app.clone();
     let app = app.clone();
-    let shared_for_sync = app.clone();
     let hide_controls = Closure::<dyn FnMut()>::new(move || {
         check_stream_health(&playback_monitor);
         let state = app.borrow();
@@ -433,16 +482,6 @@ pub fn wire(app: &Shared) -> Result<(), JsValue> {
             1000,
         )?;
     hide_controls.forget();
-    let samples = shared_for_sync.clone();
-    let sample = Closure::<dyn FnMut()>::new(move || sample_sync(&samples));
-    web_sys::window()
-        .ok_or(tr("Browservenster ontbreekt"))?
-        .set_interval_with_callback_and_timeout_and_arguments_0(
-            sample.as_ref().unchecked_ref(),
-            100,
-        )?;
-    sample.forget();
-    let shifted = shared_for_sync.clone();
     on(&video, "seeking", move |_| {
         let mut state = shifted.borrow_mut();
         let time = state.video().current_time();
@@ -495,7 +534,7 @@ pub(super) fn queue_live_preload(app: &Shared) {
             if state
                 .live_preload
                 .take()
-                .is_some_and(|preload| preload.url.is_some())
+                .is_some_and(|preload| preload.stream.is_some())
             {
                 release_preloaded_media(&state);
             }
@@ -505,7 +544,7 @@ pub(super) fn queue_live_preload(app: &Shared) {
                 key,
                 revision: state.revision,
                 sequence,
-                url: None,
+                stream: None,
             });
             sequence
         };
@@ -517,7 +556,7 @@ pub(super) fn queue_live_preload(app: &Shared) {
         let mut state = app.borrow_mut();
         if let Some(preload) = &mut state.live_preload
             && preload.sequence == sequence
-            && preload.url.take().is_some()
+            && preload.stream.take().is_some()
         {
             release_preloaded_media(&state);
         }
@@ -544,9 +583,149 @@ fn preload_focused_stream(app: &Shared, sequence: u64) -> bool {
     video.set_preload("auto");
     video.set_src(streams.primary.as_str());
     if let Some(preload) = &mut state.live_preload {
-        preload.url = Some(streams.primary);
+        preload.stream = Some(PreloadedStream {
+            url: streams.primary,
+            load_started_at: None,
+            decoded_at: None,
+        });
     }
     true
+}
+
+fn observe_preload(app: &Shared, load_start: bool) {
+    let mut state = app.borrow_mut();
+    if state.live_preload.is_none() || state.playback.is_some() || state.document.hidden() {
+        return;
+    }
+    let video = state.video();
+    if video.seeking() || !video.paused() || video.error().is_some() {
+        return;
+    }
+    let revision = state.revision;
+    let focused = focused_live_key(&state);
+    if let Some(preload) = &mut state.live_preload
+        && preload.revision == revision
+        && focused.as_ref() == Some(&preload.key)
+        && let Some(stream) = &mut preload.stream
+        && video.src() == stream.url.as_str()
+    {
+        let current = video.current_src();
+        if load_start && (current.is_empty() || current == stream.url.as_str()) {
+            stream.load_started_at.get_or_insert_with(media_clock_ms);
+        } else if !load_start
+            && stream.decoded_at.is_none()
+            && current == stream.url.as_str()
+            && has_picture(&video)
+        {
+            stream.decoded_at = Some(media_clock_ms());
+        }
+    }
+}
+
+fn media_playing(shared: &Shared) {
+    let save_episode = {
+        let mut state = shared.borrow_mut();
+        let video = state.video();
+        let visible = !state.document.hidden();
+        let App {
+            playback,
+            live_routes,
+            live_feeds,
+            live_preview,
+            ..
+        } = &mut *state;
+        let Some(play) = playback else { return };
+        if play.stream_failed
+            || play
+                .live_route
+                .as_ref()
+                .is_some_and(|route| !route.current(&video))
+            || (play.stream_health.as_ref().is_some_and(|health| {
+                health.user_paused
+                    || video.paused()
+                    || video.ready_state() < HtmlMediaElement::HAVE_CURRENT_DATA
+            }))
+        {
+            return;
+        }
+        if let Some(route) = &mut play.live_route {
+            route.awaiting_picture = play.item.kind == Kind::Live
+                && (video.video_width() == 0 || video.video_height() == 0);
+            if route.awaiting_picture {
+                return;
+            }
+        }
+        let first_play = !play.started;
+        if first_play
+            && (!visible || video.seeking())
+            && let Some(route) = &mut play.live_route
+        {
+            route.startup = None;
+        }
+        play.started = true;
+        play.completed = false;
+        if first_play
+            && visible
+            && !video.seeking()
+            && let Some(route) = &mut play.live_route
+        {
+            let startup = route.startup.take();
+            let startup_ms = startup.and_then(StartupClock::elapsed_ms);
+            let estimated = matches!(startup, Some(StartupClock::Focused { .. }));
+            let now = io::now();
+            if let Some(choice) = &route.choice {
+                if estimated && let Some(ms) = startup_ms {
+                    live_routes.success_estimated(&route.key, choice.format, now, ms);
+                } else {
+                    live_routes.success(&route.key, choice.format, now, startup_ms);
+                }
+                io::save_private(LIVE_ROUTES_KEY, live_routes);
+            }
+            if play.item.kind == Kind::Live
+                && let Some(startup_ms) = startup_ms
+            {
+                let sample = FeedSample {
+                    format: route.choice.as_ref().map(|choice| choice.format),
+                    epg_id: &route.epg_id,
+                    startup_ms,
+                    width: video.video_width(),
+                    height: video.video_height(),
+                };
+                let changed = if estimated {
+                    live_feeds.record_estimated(&route.source, &route.physical_id, now, sample)
+                } else {
+                    live_feeds.record(&route.source, &route.physical_id, now, sample)
+                };
+                if changed {
+                    io::save_private(LIVE_FEEDS_KEY, live_feeds);
+                    live_preview.feed_changed(shared, &route.epg_id);
+                }
+            }
+        }
+        play.item.kind == Kind::Episode
+    };
+    if save_episode {
+        save_position(shared, true, false);
+    }
+    let mut state = shared.borrow_mut();
+    state.hide_live_loading();
+    live::record_playing(&mut state);
+    focus_live_video(&state);
+    if state.playback.as_ref().is_some_and(|play| {
+        play.selected_subtitle.is_some() && play.sync_enabled && play.sync.is_none()
+    }) {
+        configure_sync(shared, &mut state);
+    }
+    if state.playback.is_some()
+        && !state
+            .playback
+            .as_ref()
+            .is_some_and(|playback| playback.panel)
+    {
+        state.player_note("");
+    }
+    restore_tracks(&state);
+    update_timeline(&state);
 }
 
 fn release_preloaded_media(state: &App) {
@@ -556,33 +735,104 @@ fn release_preloaded_media(state: &App) {
     video.load();
 }
 
+enum FeedSelection {
+    Explore,
+    Preferred,
+    Measured(Option<Format>),
+}
+
 fn stream_urls(state: &App, item: &Item) -> Option<StreamUrls> {
-    let source = &state.settings.source;
-    item.playback_url(source).map(|primary| {
-        let mut streams = StreamUrls {
-            primary,
-            alternate: None,
-            live_route: None,
+    let catalog = state
+        .model
+        .get(&Kind::Live)
+        .or_else(|| state.catalog_previews.get(&Kind::Live));
+    if item.kind == Kind::Live
+        && !item.epg_id.trim().is_empty()
+        && let Some(catalog) = catalog
+        && let Some((id, format, startup_ms)) =
+            state
+                .live_feeds
+                .best_feed(&state.source_key, &item.id, &item.epg_id, io::now(), |id| {
+                    catalog.equivalent_live_feed(item, id).is_some()
+                })
+        && let Some(donor) = catalog.equivalent_live_feed(item, id)
+        && let Some(mut streams) = feed_urls(state, donor, FeedSelection::Measured(format))
+        && let Some(route) = &mut streams.live_route
+        && let Some(original) = feed_urls(state, item, FeedSelection::Preferred)
+    {
+        route.fallback = Some(Box::new(original));
+        // The TV can still be starting its decoder on the first click from the cached list.
+        let minimum_ms = if state.model.contains_key(&Kind::Live) {
+            2000
+        } else {
+            4500
         };
-        if let Some(alternate) = item.alternate_live_url(source, &streams.primary) {
-            let primary_format = if streams.primary.path().ends_with(".ts") {
-                "ts"
-            } else {
-                "m3u8"
-            };
-            let key = format!("{}:{primary_format}", state.library_key(item));
-            let using_alternate = state.live_routes.prefers_alternate(&key, io::now());
-            if using_alternate {
-                streams.alternate = Some(std::mem::replace(&mut streams.primary, alternate));
-            } else {
-                streams.alternate = Some(alternate);
+        route.donor_limit_ms = Some(startup_ms.saturating_add(1500).clamp(minimum_ms, 12_000));
+        if startup_ms >= FEED_TRIAL_THRESHOLD_MS
+            && let Some(mut trial) = feed_urls(state, item, FeedSelection::Explore)
+            && let Some(trial_route) = &mut trial.live_route
+            && let Some(choice) = &mut trial_route.choice
+            && choice.trial_against_feed(startup_ms)
+        {
+            // Recovery can still use the known original after the donor, without repeating the trial.
+            if let Some(original) = &mut route.fallback {
+                original.alternate = None;
             }
-            streams.live_route = Some(LiveRoute {
-                key,
-                using_alternate,
-            });
+            trial_route.fallback = Some(Box::new(streams));
+            return Some(trial);
         }
-        streams
+        return Some(streams);
+    }
+    feed_urls(state, item, FeedSelection::Explore)
+}
+
+fn feed_urls(state: &App, item: &Item, selection: FeedSelection) -> Option<StreamUrls> {
+    let source = &state.settings.source;
+    let mut primary = item.playback_url(source)?;
+    let mut alternate = item.alternate_live_url(source, &primary);
+    let key = state.library_key(item);
+    let choice = if let Some(other) = &mut alternate {
+        let advertised = if primary.path().ends_with(".ts") {
+            Format::Ts
+        } else {
+            Format::Hls
+        };
+        let choice = match selection {
+            FeedSelection::Explore => state.live_routes.select(&key, advertised, io::now()),
+            FeedSelection::Preferred => state.live_routes.preferred(&key, advertised, io::now()),
+            FeedSelection::Measured(Some(format)) => Choice {
+                format,
+                proven: true,
+                trial_limit_ms: None,
+            },
+            FeedSelection::Measured(None) => return None,
+        };
+        if choice.format != advertised {
+            std::mem::swap(&mut primary, other);
+        }
+        Some(choice)
+    } else if matches!(selection, FeedSelection::Measured(Some(_))) {
+        return None;
+    } else {
+        None
+    };
+    let live_route = item.kind.is_live_stream().then(|| LiveRoute {
+        key,
+        choice,
+        source: state.source_key.clone(),
+        physical_id: item.id.clone(),
+        epg_id: item.epg_id.clone(),
+        url: primary.clone(),
+        startup: None,
+        awaiting_picture: false,
+        fallback: None,
+        previous_urls: Vec::new(),
+        donor_limit_ms: None,
+    });
+    Some(StreamUrls {
+        primary,
+        alternate,
+        live_route,
     })
 }
 
@@ -626,17 +876,32 @@ fn start_media(app: &Shared, item: Item, streams: StreamUrls, with_subtitles: bo
     } = streams;
     let live_item = item.kind == Kind::Live;
     let radio_item = item.kind == Kind::Radio;
-    let can_retry = alternate.is_some();
+    let can_retry = alternate.is_some()
+        || live_route
+            .as_ref()
+            .is_some_and(|route| route.fallback.is_some());
     let (subtitle_choice, legacy_subtitle_key, version) = {
         let mut state = app.borrow_mut();
         let video = state.video();
-        let reuse_preload = state.live_preload.take().is_some_and(|preload| {
-            live_item
-                && preload.revision == state.revision
-                && preload.key == item.key()
-                && preload.url.as_ref() == Some(&primary)
-                && video.error().is_none()
-        });
+        let selected_at = media_clock_ms();
+        let preload = state
+            .live_preload
+            .take()
+            .filter(|preload| {
+                live_item && preload.revision == state.revision && preload.key == item.key()
+            })
+            .and_then(|preload| preload.stream)
+            .filter(|stream| {
+                stream.url == primary && video.src() == primary.as_str() && video.error().is_none()
+            });
+        if let Some(route) = &live_route
+            && let Some(choice) = &route.choice
+            && choice.trial_limit_ms.is_some()
+        {
+            state
+                .live_routes
+                .begin_trial(&route.key, choice.format, io::now());
+        }
         let archive_guide = archive.then(|| state.live_guide.archive_return());
         live::clear(&mut state);
         let series_detail = state.detail.as_ref().filter(|detail| {
@@ -760,12 +1025,28 @@ fn start_media(app: &Shared, item: Item, streams: StreamUrls, with_subtitles: bo
         let _ = state
             .element("player")
             .set_attribute("data-controls", if live_item { "false" } else { "true" });
-        if !reuse_preload {
+        if let Some(preload) = preload {
+            if !state.document.hidden()
+                && let Some(route) = state
+                    .playback
+                    .as_mut()
+                    .and_then(|play| play.live_route.as_mut())
+            {
+                route.startup = preload.startup(&video, selected_at);
+            }
+        } else {
             if live_item || radio_item {
                 let _ = video.pause();
             }
             video.set_preload("metadata");
             video.set_cross_origin(show_tracks.then_some("anonymous"));
+            if let Some(route) = state
+                .playback
+                .as_mut()
+                .and_then(|play| play.live_route.as_mut())
+            {
+                route.startup = Some(StartupClock::cold());
+            }
             video.set_src(primary.as_str());
         }
         set_seek_available(&state, false);
@@ -1021,7 +1302,7 @@ pub fn dispatch(app: &Shared, cmd: &str, value: &str) {
             if let Some(play) = &mut state.playback {
                 play.sync_enabled = !play.sync_enabled;
             }
-            configure_sync(&mut state);
+            configure_sync(app, &mut state);
             remember_external(&mut state);
             refresh_tracks(&state);
         }
@@ -1066,7 +1347,11 @@ fn toggle(app: &Shared) {
                 (!play.started).then_some((
                     play.version,
                     play.stream_attempt,
-                    play.alternate_url.is_some(),
+                    play.alternate_url.is_some()
+                        || play
+                            .live_route
+                            .as_ref()
+                            .is_some_and(|route| route.fallback.is_some()),
                 ))
             })
         };
@@ -1083,6 +1368,9 @@ fn toggle(app: &Shared) {
         {
             health.user_paused = true;
             health.observation = None;
+            if let Some(route) = &mut play.live_route {
+                route.startup = None;
+            }
             play.stream_attempt += 1;
         }
         let _ = video.pause();
@@ -1180,13 +1468,24 @@ fn reconnect_stream(app: &Shared, version: u64) {
         if health.user_paused {
             return;
         }
-        if health.retried {
+        let has_fallback_feed = play
+            .live_route
+            .as_ref()
+            .is_some_and(|route| route.fallback.is_some());
+        if health.retried || has_fallback_feed {
+            play.started = false;
             drop(state);
-            fail_stream(app, version);
+            if !try_alternate_stream(app, version, StreamSwitch::Error) {
+                fail_stream(app, version);
+            }
             return;
         }
         health.retried = true;
         health.observation = None;
+        if let Some(route) = &mut play.live_route {
+            route.startup = None;
+            route.awaiting_picture = false;
+        }
         play.started = false;
         play.stream_attempt += 1;
         let attempt = play.stream_attempt;
@@ -1223,58 +1522,118 @@ fn fail_stream(app: &Shared, version: u64) {
 }
 
 fn try_alternate_stream(app: &Shared, version: u64, reason: StreamSwitch) -> bool {
-    let attempt = {
+    let (attempt, has_alternate) = {
         let mut state = app.borrow_mut();
         let video = state.video();
-        let Some(play) = state
-            .playback
+        let visible = !state.document.hidden();
+        let App {
+            playback,
+            live_routes,
+            live_feeds,
+            live_preview,
+            ..
+        } = &mut *state;
+        let Some(play) = playback
             .as_mut()
             .filter(|play| play.version == version && !play.started && !play.stream_failed)
         else {
             return false;
         };
-        let next = play.alternate_url.take().or_else(|| {
-            let slow_url = play.early_retry_url.take();
-            slow_url.filter(|_| reason == StreamSwitch::Error)
-        });
-        let Some(url) = next else {
-            return false;
-        };
-        // Give a slow primary one more chance if the early alternate fails outright.
-        if reason == StreamSwitch::NoMetadata {
-            play.early_retry_url = http_url(&video.src());
+        if visible && let Some(route) = &play.live_route {
+            let now = io::now();
+            if let Some(choice) = &route.choice {
+                live_routes.failure(&route.key, choice.format, now);
+                io::save_private(LIVE_ROUTES_KEY, live_routes);
+            }
+            if live_feeds.failure(
+                &route.source,
+                &route.physical_id,
+                now,
+                route.choice.as_ref().map(|choice| choice.format),
+            ) {
+                io::save_private(LIVE_FEEDS_KEY, live_feeds);
+                live_preview.feed_changed(app, &route.epg_id);
+            }
         }
+        let mut previous_urls = Vec::new();
+        let fallback = play.live_route.as_mut().and_then(|route| {
+            previous_urls = std::mem::take(&mut route.previous_urls);
+            previous_urls.push(route.url.clone());
+            route.fallback.take()
+        });
+        let (url, has_alternate) = if let Some(fallback) = fallback {
+            play.live_route = fallback.live_route;
+            play.alternate_url = fallback.alternate;
+            play.early_retry_url = None;
+            let can_retry = play.alternate_url.is_some()
+                || play
+                    .live_route
+                    .as_ref()
+                    .is_some_and(|route| route.fallback.is_some());
+            (fallback.primary, can_retry)
+        } else {
+            let next = play.alternate_url.take().or_else(|| {
+                let slow_url = play.early_retry_url.take();
+                slow_url.filter(|_| reason == StreamSwitch::Error)
+            });
+            let Some(url) = next else {
+                return false;
+            };
+            // Give a slow primary one more chance if the early alternate fails outright.
+            if reason == StreamSwitch::NoMetadata {
+                play.early_retry_url = http_url(&video.src());
+            }
+            if let Some(choice) = play
+                .live_route
+                .as_mut()
+                .and_then(|route| route.choice.as_mut())
+            {
+                choice.format = choice.format.other();
+                choice.trial_limit_ms = None;
+            }
+            (url, false)
+        };
         if let Some(route) = &mut play.live_route {
-            route.using_alternate = !route.using_alternate;
+            route.url = url.clone();
+            route.startup = (!previous_urls.contains(&url)).then(StartupClock::cold);
+            route.previous_urls = previous_urls;
+            route.awaiting_picture = false;
         }
         play.stream_attempt += 1;
+        if let Some(health) = &mut play.stream_health {
+            health.retried = false;
+            health.observation = None;
+        }
         let attempt = play.stream_attempt;
         state.note_tuning();
         video.set_src(url.as_str());
-        attempt
+        (attempt, has_alternate)
     };
     request_play(app);
     watch_stream_start(app, version, attempt, StreamSwitch::Deadline);
+    if has_alternate {
+        watch_stream_start(app, version, attempt, StreamSwitch::NoMetadata);
+    }
     true
 }
 
 fn watch_stream_start(app: &Shared, version: u64, attempt: u64, reason: StreamSwitch) {
     let early = reason == StreamSwitch::NoMetadata;
-    let timeout = if early {
-        let using_remembered_route = app.borrow().playback.as_ref().is_some_and(|play| {
-            play.stream_attempt == 0
-                && play
-                    .live_route
-                    .as_ref()
-                    .is_some_and(|route| route.using_alternate)
-        });
-        if using_remembered_route {
-            KNOWN_LIVE_ROUTE_TIMEOUT_MS
-        } else {
-            LIVE_NO_METADATA_TIMEOUT_MS
+    let (timeout, trial) = if early {
+        let state = app.borrow();
+        match state
+            .playback
+            .as_ref()
+            .and_then(|play| play.live_route.as_ref())
+        {
+            Some(route) if let Some(limit) = route.trial_limit_ms() => (limit as i32, true),
+            Some(route) if route.choice.as_ref().is_some_and(|choice| choice.proven) => {
+                (KNOWN_LIVE_ROUTE_TIMEOUT_MS, false)
+            }
+            _ => (LIVE_NO_METADATA_TIMEOUT_MS, false),
         }
     } else {
-        STREAM_START_TIMEOUT_MS
+        (STREAM_START_TIMEOUT_MS, false)
     };
     let app = app.clone();
     spawn_local(async move {
@@ -1286,7 +1645,9 @@ fn watch_stream_start(app: &Shared, version: u64, attempt: u64, reason: StreamSw
                     && play.stream_attempt == attempt
                     && !play.started
                     && !play.stream_failed
-            }) || (early && state.video().ready_state() != HtmlMediaElement::HAVE_NOTHING)
+            }) || (early
+                && !trial
+                && state.video().ready_state() != HtmlMediaElement::HAVE_NOTHING)
             {
                 return;
             }
@@ -1571,6 +1932,9 @@ pub fn show_panel(app: &Shared, visible: bool) {
         .unchecked_into::<HtmlElement>()
         .set_hidden(visible);
     if visible {
+        if !was_visible {
+            state.element("subtitle-body").set_scroll_top(0);
+        }
         let input = state
             .element("subtitle-query")
             .unchecked_into::<HtmlInputElement>();
@@ -1579,11 +1943,12 @@ pub fn show_panel(app: &Shared, visible: bool) {
         refresh_tracks(&state);
         render_results(&state);
         state.player_note("");
-        let first = if !state.element("subtitle-online").has_attribute("hidden") {
-            state.element("subtitle-best-button")
-        } else {
-            state.element("subtitle-close")
-        };
+        let first = state
+            .element("subtitle-tracks")
+            .query_selector("button[aria-pressed=true]:not([data-cmd=track-off])")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| state.element("subtitle-close"));
         focus(&state.document, &first);
     } else {
         state.player_note("");
@@ -1872,14 +2237,21 @@ fn refresh_tracks(state: &App) {
         })
     });
     panel.set_text_content(None);
-    state.button(&panel, tr("Uit"), "track-off", "", "");
+    let off = state.button(&panel, tr("Uit"), "track-off", "", "");
     let external = external_track(state);
+    let mut has_active_track = false;
     let mut has_dutch_track = false;
     if let Some(tracks) = state.video().text_tracks() {
         for index in 0..tracks.length() {
             let Some(track) = tracks.get(index) else {
                 continue;
             };
+            let showing = track.mode() == TextTrackMode::Showing;
+            has_active_track |= showing
+                && matches!(
+                    track.kind(),
+                    TextTrackKind::Subtitles | TextTrackKind::Captions
+                );
             if external.as_ref() == Some(&track) {
                 continue;
             }
@@ -1893,20 +2265,20 @@ fn refresh_tracks(state: &App) {
                 tr("English")
             };
             let cc = if info.cc { " CC" } else { "" };
-            let current = if track.mode() == TextTrackMode::Showing {
-                " ✓"
-            } else {
-                ""
-            };
-            state.button(
+            let button = state.button(
                 &panel,
-                &format!("{language}{cc}{current}"),
+                &format!("{language}{cc}"),
                 "track",
                 &index.to_string(),
                 "",
             );
+            let _ = button.set_attribute("aria-pressed", if showing { "true" } else { "false" });
         }
     }
+    let _ = off.set_attribute(
+        "aria-pressed",
+        if has_active_track { "false" } else { "true" },
+    );
     let can_search = subtitle_search_enabled(state);
     state
         .element("subtitle-online")
@@ -1967,8 +2339,10 @@ fn refresh_tracks(state: &App) {
             state.node(&panel, "span", "active-subtitle", &selected.label_with(tr));
         }
         let timing = state.node(&panel, "div", "subtitle-timing", "");
+        let shift = state.node(&timing, "div", "subtitle-shift", "");
+        let _ = shift.set_attribute("data-subtitle-row", "");
         state.button(
-            &timing,
+            &shift,
             &format!("{} ½ s", tr("Eerder")),
             "offset",
             "-0.5",
@@ -1976,24 +2350,19 @@ fn refresh_tracks(state: &App) {
         );
         let now = state.video().current_time();
         state.node(
-            &timing,
+            &shift,
             "span",
             "subtitle-offset",
             &format!("{:+.1} s", now - play.subtitle_timing.subtitle_time(now)),
         );
-        state.button(
-            &timing,
-            &format!("{} ½ s", tr("Later")),
-            "offset",
-            "0.5",
-            "",
-        );
-        let auto = state.button(&timing, "Auto-sync", "sync-toggle", "", "");
+        state.button(&shift, &format!("{} ½ s", tr("Later")), "offset", "0.5", "");
+        let sync = state.node(&timing, "div", "subtitle-sync", "");
+        let auto = state.button(&sync, "Auto-sync", "sync-toggle", "", "");
         let _ = auto.set_attribute(
             "aria-pressed",
             if play.sync_enabled { "true" } else { "false" },
         );
-        state.node(&timing, "span", "muted sync-status", &play.sync_notice);
+        state.node(&sync, "span", "muted sync-status", &play.sync_notice);
     }
     if let Some((command, value)) = active
         && let Ok(buttons) = panel.query_selector_all("button")
@@ -2128,8 +2497,11 @@ fn search_subtitles(app: &Shared, best: bool) {
         } else {
             Vec::new()
         };
+        let panel_visible = play.panel;
         render_results(&state);
-        state.player_note(&message);
+        if panel_visible {
+            state.player_note(&message);
+        }
         drop(state);
         if !candidates.is_empty() {
             load_subtitles(
@@ -2367,7 +2739,7 @@ fn load_subtitles(app: &Shared, candidates: Vec<Subtitle>, selection: SubtitleSe
                     play.sync = None;
                     play.sync_enabled = timing.is_none_or(|timing| timing.auto);
                 }
-                configure_sync(&mut state);
+                configure_sync(&app, &mut state);
                 remember_external(&mut state);
                 body_to_cache
             };
@@ -2414,7 +2786,7 @@ fn disable_sync(state: &mut App) {
     }
 }
 
-fn configure_sync(state: &mut App) {
+fn configure_sync(app: &Shared, state: &mut App) {
     let video = state.video();
     let Some(play) = &mut state.playback else {
         return;
@@ -2427,7 +2799,13 @@ fn configure_sync(state: &mut App) {
         return;
     };
     let cues = subtitles::sync_cues(body);
-    match super::timing::AudioSync::start(&video, cues) {
+    let app = std::rc::Rc::downgrade(app);
+    let sample = move || {
+        if let Some(app) = app.upgrade() {
+            sample_sync(&app);
+        }
+    };
+    match super::timing::AudioSync::start(&video, cues, sample) {
         Ok(sync) => {
             play.sync = Some(sync);
             play.sync_notice = tr("Timing meten tijdens afspelen…").to_owned();

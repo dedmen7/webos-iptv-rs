@@ -58,11 +58,11 @@ pub async fn live_catalog(
     let mut parser = JsonArray::default();
     let mut items = Vec::new();
     let mut received = 0;
-    let mut slice_bytes = 0;
+    let mut work_started = js_sys::Date::now();
     while current()
         && let Some(chunk) = body.next().await?
     {
-        for bytes in chunk.chunks(VOD_PARSE_SLICE) {
+        for bytes in chunk.chunks(CATALOG_PARSE_SLICE) {
             parser
                 .feed(bytes, |row| {
                     let entry = serde_json::from_slice(row).map_err(|_| ())?;
@@ -75,13 +75,9 @@ pub async fn live_catalog(
                 .map_err(|_| {
                     tr("De aanbieder gaf geen catalogus terug. Controleer je inloggegevens.")
                 })?;
-            slice_bytes += bytes.len();
-            if slice_bytes >= VOD_PARSE_SLICE {
-                slice_bytes = 0;
-                io::delay(0).await;
-                if !current() {
-                    break;
-                }
+            yield_catalog_work(&mut work_started).await;
+            if !current() {
+                break;
             }
         }
     }
@@ -123,7 +119,16 @@ pub struct PreviewCategory<'a> {
 }
 
 const VOD_BATCH_SIZE: usize = 768;
-const VOD_PARSE_SLICE: usize = 128 * 1024;
+const CATALOG_PARSE_SLICE: usize = 64 * 1024;
+const CATALOG_WORK_SLICE_MS: f64 = 9.;
+
+async fn yield_catalog_work(work_started: &mut f64) {
+    let elapsed = js_sys::Date::now() - *work_started;
+    if !(0.0..CATALOG_WORK_SLICE_MS).contains(&elapsed) {
+        io::delay(0).await;
+        *work_started = js_sys::Date::now();
+    }
+}
 
 pub async fn stream_vod(
     feed: VodFeed<'_>,
@@ -147,9 +152,9 @@ pub async fn stream_vod(
     let mut batch = Vec::with_capacity(VOD_BATCH_SIZE);
     let mut received = 0;
     let mut usable = 0;
-    let mut processed_bytes = 0;
+    let mut work_started = js_sys::Date::now();
     while let Some(bytes) = body.next().await? {
-        for bytes in bytes.chunks(VOD_PARSE_SLICE) {
+        for bytes in bytes.chunks(CATALOG_PARSE_SLICE) {
             let more = parser
                 .feed(bytes, |value| {
                     received += 1;
@@ -169,11 +174,7 @@ pub async fn stream_vod(
                     return Ok(());
                 }
             }
-            processed_bytes += bytes.len();
-            if processed_bytes >= VOD_PARSE_SLICE {
-                processed_bytes = 0;
-                io::delay(0).await;
-            }
+            yield_catalog_work(&mut work_started).await;
         }
     }
     if !parser.finished() {
@@ -207,22 +208,15 @@ struct VodRow {
 }
 
 #[derive(Default, Deserialize)]
-#[serde(untagged)]
-enum Field {
-    Text(String),
-    Number(serde_json::Number),
-    Ignored(IgnoredAny),
-    #[default]
-    Empty,
-}
+struct Field(Value);
 
 impl Field {
     fn text(self) -> String {
-        match self {
-            Self::Text(value) if value.len() == value.trim().len() => value,
-            Self::Text(value) => value.trim().to_owned(),
-            Self::Number(value) => value.to_string(),
-            Self::Empty | Self::Ignored(_) => String::new(),
+        match self.0 {
+            Value::String(value) if value.len() == value.trim().len() => value,
+            Value::String(value) => value.trim().to_owned(),
+            Value::Number(value) => value.to_string(),
+            _ => String::new(),
         }
     }
 

@@ -24,7 +24,16 @@ impl JsonArray {
         mut visit: impl FnMut(&[u8]) -> Result<bool, ()>,
     ) -> Result<bool, ()> {
         let mut start = 0;
-        for (index, &byte) in bytes.iter().enumerate() {
+        let mut index = 0;
+        while index < bytes.len() {
+            // Only quotes and escapes matter until the end of a string.
+            if self.quoted && !self.escaped {
+                let Some(special) = memchr::memchr2(b'"', b'\\', &bytes[index..]) else {
+                    break;
+                };
+                index += special;
+            }
+            let byte = bytes[index];
             match self.state {
                 State::Start if byte == b'[' => self.state = State::First,
                 State::Start | State::End if !whitespace(byte) => return Err(()),
@@ -62,6 +71,7 @@ impl JsonArray {
                 }
                 _ => {}
             }
+            index += 1;
         }
         if self.state == State::Value {
             self.pending.extend_from_slice(&bytes[start..]);
@@ -120,6 +130,29 @@ mod tests {
         }
         assert!(parser.finished());
         assert_eq!(Value::Array(actual), expected);
+    }
+
+    #[test]
+    fn preserves_long_strings_and_escapes_across_chunk_boundaries() {
+        let padding = "abc,]é".repeat(10);
+        let expected = json!([format!("{padding}\\\"{padding}"), {"data": [true, null]}, ""]);
+        let raw = expected.to_string();
+        for split in 0..=raw.len() {
+            let mut parser = JsonArray::default();
+            let mut actual = Vec::<Value>::new();
+            for chunk in [&raw.as_bytes()[..split], &raw.as_bytes()[split..]] {
+                assert!(
+                    parser
+                        .feed(chunk, |row| {
+                            actual.push(serde_json::from_slice(row).map_err(|_| ())?);
+                            Ok(true)
+                        })
+                        .unwrap()
+                );
+            }
+            assert!(parser.finished());
+            assert_eq!(Value::Array(actual), expected);
+        }
     }
 
     #[test]

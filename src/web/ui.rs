@@ -1668,13 +1668,10 @@ pub fn navigate(app: &Shared, key: &str) -> bool {
         state.element("search-keyboard")
     } else if state.live_guide.is_open() {
         state.element("live-guide-modal")
+    } else if state.playback.as_ref().is_some_and(|play| play.panel) {
+        return navigate_subtitles(&state, active.as_ref(), key);
     } else if state.playback.is_some() {
-        let panel = state.playback.as_ref().is_some_and(|play| play.panel);
-        state.element(if panel {
-            "subtitle-panel"
-        } else {
-            "player-actions"
-        })
+        state.element("player-actions")
     } else {
         state.element("app")
     };
@@ -1732,6 +1729,79 @@ pub fn navigate(app: &Shared, key: &str) -> bool {
         return true;
     }
     false
+}
+
+fn navigate_subtitles(state: &App, active: Option<&Element>, key: &str) -> bool {
+    let root = state.element("subtitle-panel");
+    let Ok(controls) = root.query_selector_all("button:not([disabled]), input:not([disabled])")
+    else {
+        return false;
+    };
+    let mut rows: Vec<(Element, Vec<Element>)> = Vec::new();
+    for index in 0..controls.length() {
+        let Some(element) = controls
+            .item(index)
+            .and_then(|node| node.dyn_into::<Element>().ok())
+        else {
+            continue;
+        };
+        let rect = element.get_bounding_client_rect();
+        if rect.width() <= 0. || rect.height() <= 0. {
+            continue;
+        }
+        let row = element
+            .closest("[data-subtitle-row]")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| element.clone());
+        if let Some((last_row, buttons)) = rows.last_mut()
+            && *last_row == row
+        {
+            buttons.push(element);
+        } else {
+            rows.push((row, vec![element]));
+        }
+    }
+    let position = rows.iter().enumerate().find_map(|(row, (_, controls))| {
+        controls
+            .iter()
+            .position(|control| Some(control) == active)
+            .map(|column| (row, column))
+    });
+    let target = if let Some((row, column)) = position {
+        let controls = &rows[row].1;
+        let adjacent = |previous| {
+            if previous {
+                row.checked_sub(1)
+            } else {
+                Some(row + 1)
+            }
+        };
+        match key {
+            "ArrowLeft" => column.checked_sub(1).and_then(|index| controls.get(index)),
+            "ArrowRight" => controls.get(column + 1),
+            _ => adjacent(key == "ArrowUp")
+                .and_then(|index| rows.get(index))
+                .and_then(|(_, next)| {
+                    let center = |element: &Element| {
+                        let rect = element.get_bounding_client_rect();
+                        rect.x() + rect.width() / 2.
+                    };
+                    let origin = center(&controls[column]);
+                    next.iter().min_by(|a, b| {
+                        (center(a) - origin)
+                            .abs()
+                            .total_cmp(&(center(b) - origin).abs())
+                    })
+                }),
+        }
+    } else {
+        rows.first().and_then(|(_, controls)| controls.first())
+    };
+    if let Some(target) = target {
+        focus(&state.document, target);
+    }
+    true
 }
 
 pub(super) fn first_below_picker(state: &App, choice: Choice) -> Option<Element> {
